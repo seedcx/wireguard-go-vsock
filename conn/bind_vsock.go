@@ -1,4 +1,4 @@
-package wgvsock
+package vsockconn
 
 import (
 	"errors"
@@ -16,7 +16,10 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
-const cidAny = math.MaxUint32 // VMADDR_CID_ANY (-1U)
+const (
+	anyCID  = math.MaxUint32 // VMADDR_CID_ANY (-1U)
+	anyPort = math.MaxUint32 // VMADDR_PORT_ANY (-1U)
+)
 
 type VsockEndpoint struct {
 	mu  sync.Mutex
@@ -85,7 +88,7 @@ type VsockBind struct {
 	sock int
 }
 
-func NewSocketBind() conn.Bind { return &VsockBind{} }
+func NewVsockSocketBind() conn.Bind { return &VsockBind{} }
 
 var (
 	_ conn.Endpoint = (*VsockEndpoint)(nil)
@@ -122,7 +125,7 @@ func (*VsockBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 func (bind *VsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	// TODO(balena): VSOCK ports are 32-bits, this may break at corner cases, but
 	// in general apps can use 16-bit ones.
-	fns, newPort, err := bind.OpenContextID(cidAny, uint32(port))
+	fns, newPort, err := bind.OpenContextID(anyCID, uint32(port))
 	return fns, *(*uint16)(unsafe.Pointer(&newPort)), err
 }
 
@@ -141,7 +144,7 @@ again:
 
 	sock, newPort, err := createVsock(cid, port)
 	if err != nil {
-		if originalPort == 0 && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
+		if originalPort == anyPort && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
 			unix.Close(sock)
 			tries++
 			goto again
