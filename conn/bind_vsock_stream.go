@@ -3,7 +3,6 @@ package vsockconn
 import (
 	"net"
 	"sync"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
@@ -50,7 +49,7 @@ func (bind *VsockStreamBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, erro
 		port32 = uint32(port)
 	}
 	fns, newPort, err := bind.OpenContextID(AnyCID, port32)
-	return fns, *(*uint16)(unsafe.Pointer(&newPort)), err
+	return fns, uint16(newPort), err
 }
 
 func (bind *VsockStreamBind) OpenContextID(cid, port uint32) ([]conn.ReceiveFunc, uint32, error) {
