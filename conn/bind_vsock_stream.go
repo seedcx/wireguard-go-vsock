@@ -62,7 +62,8 @@ func (bind *VsockStreamBind) OpenContextID(cid, port uint32) ([]conn.ReceiveFunc
 	}
 
 	if port == AnyPort {
-		// Don't listen to any port, it will act as client only
+		// In client mode, we'll wait for the peer address at the Send function
+		bind.wg.Add(1)
 	} else {
 		fd, err := createVsockStreamAndListen(cid, port)
 		if err != nil {
@@ -110,15 +111,47 @@ func (bind *VsockStreamBind) Send(buff []byte, end conn.Endpoint) error {
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
-	if *nend.Dst() != *bind.conn_end.Dst() {
-		return net.ErrClosed
-	}
+
 	bind.mu.RLock()
 	defer bind.mu.RUnlock()
+
 	if bind.conn_sock == -1 {
-		return net.ErrClosed
+		if bind.listen_sock == -1 {
+			// In client mode, we connect to the peer
+			bind.mu.Lock()
+			defer bind.mu.Unlock()
+			fd, err := createVsockStreamAndConnect(nend)
+			if err != nil {
+				return err
+			}
+			bind.conn_sock = fd
+			*bind.conn_end.Dst() = *nend.Dst()
+			bind.wg.Done()
+		} else {
+			// In listening mode, we'll wait for a connection
+			return net.ErrClosed
+		}
+	} else {
+		if *nend.Dst() != *bind.conn_end.Dst() {
+			bind.log.Verbosef("multiple peers is not supported")
+			return net.ErrClosed
+		}
 	}
-	return unix.Send(bind.conn_sock, buff, 0)
+
+	err := unix.Send(bind.conn_sock, buff, 0)
+	if err != nil {
+		bind.mu.Lock()
+		defer bind.mu.Unlock()
+		if bind.conn_sock != -1 {
+			unix.Close(bind.conn_sock)
+			bind.conn_sock = -1
+			bind.conn_end.ClearDst()
+			bind.wg.Add(1)
+		}
+		return err
+	}
+
+	return nil
 }
 
 func (bind *VsockStreamBind) startAccepting() {
@@ -189,6 +222,25 @@ func (bind *VsockStreamBind) receive(b []byte) (int, conn.Endpoint, error) {
 		}
 	}
 	return n, &end, err
+}
+
+func createVsockStreamAndConnect(nend *VsockEndpoint) (int, error) {
+	fd, err := unix.Socket(
+		unix.AF_VSOCK,
+		unix.SOCK_STREAM,
+		0,
+	)
+	if err != nil {
+		return -1, err
+	}
+
+	err = unix.Connect(fd, nend.Dst())
+	if err != nil {
+		unix.Close(fd)
+		return -1, err
+	}
+
+	return fd, nil
 }
 
 func createVsockStreamAndListen(cid, port uint32) (int, error) {
