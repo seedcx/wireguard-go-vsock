@@ -26,6 +26,8 @@ To run with more logging you may set the environment variable `LOG_LEVEL=debug`.
 
 Note that this implementation will adopt addresses in the format `vsock://<cid>:<port>` where `cid` is the VSOCK address and `port` the port number. Note that due to certain implementation limitations at the base `wireguard-go`, the port should not be set as 32-bits, but 16-bits instead (as in Internet addresses).
 
+By default, `wireguard-go-vsock` uses `SOCK_STREAM` socket type. If you want to use `SOCK_DGRAM`, just add `-d` to the command line. Just note that `SOCK_DGRAM` isn't supported by every hypervisor, if not supported, you should see `ENODEV` (no such device) at the logs. The `SOCK_STREAM` vsock implementation supports a single connection only, which is the most common use case when dealing with AWS Nitro Enclaves.
+
 ## Platforms
 
 ### Linux
