@@ -26,6 +26,9 @@ func main() {
 	dev := device.NewDevice(tun, vsockconn.NewVsockStreamBind(logger), logger)
 	dev.IpcSet(`private_key=a8dac1d8a70a751f0f699fb14ba1cff7b79cf4fbd8f09f44c6e6a90d0369604f
 listen_port=10000
+public_key=25123c5dcd3328ff645e4f2a3fce0d754400d3887a0cb7c56f0267e20fbf3c5b
+allowed_ip=0.0.0.0/0
+persistent_keepalive_interval=25
 `)
 	dev.Up()
 	listener, err := tnet.ListenTCP(&net.TCPAddr{Port: 80})
