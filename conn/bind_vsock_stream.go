@@ -62,15 +62,47 @@ func (bind *VsockStreamBind) OpenContextID(cid, port uint32) ([]conn.ReceiveFunc
 	}
 
 	if port == AnyPort {
-		// In client mode, we'll wait for the peer address at the Send function
+		// As client, we'll connect at the Send function
 		bind.wg.Add(1)
 	} else {
-		fd, err := createVsockStreamAndListen(cid, port)
+		fd, err := listenVsock(cid, port)
 		if err != nil {
 			return nil, 0, err
 		}
 		bind.listen_sock = fd
-		bind.startAccepting()
+		bind.wg.Add(1)
+		go func() {
+			for {
+				nfd, newDst, err := acceptVsock(bind.listen_sock)
+				if err != nil {
+					bind.mu.Lock()
+					defer bind.mu.Unlock()
+					if bind.listen_sock != -1 {
+						bind.log.Errorf("Failed to accept, shutdown loop: %v", err)
+						unix.Close(bind.listen_sock)
+						bind.listen_sock = -1
+					}
+					break
+				}
+
+				bind.mu.Lock()
+				if bind.conn_sock == -1 {
+					// bind.wg.Add(1) occurs when:
+					// - first listen
+					// - whenever the peer connection drops
+					bind.wg.Done()
+				} else {
+					// In this case we don't bind.wg.Done() because
+					// it is an atomic substitution
+					unix.Close(bind.conn_sock)
+				}
+				bind.conn_sock = nfd
+				*bind.conn_end.Dst() = *newDst
+				bind.mu.Unlock()
+			}
+
+			bind.log.Verbosef("Shutdown accept loop")
+		}()
 	}
 
 	return []conn.ReceiveFunc{bind.makeReceiveFunc()}, port, nil
@@ -120,7 +152,7 @@ func (bind *VsockStreamBind) Send(buff []byte, end conn.Endpoint) error {
 			// In client mode, we connect to the peer
 			bind.mu.Lock()
 			defer bind.mu.Unlock()
-			fd, err := createVsockStreamAndConnect(nend)
+			fd, err := dialVsock(nend.Dst())
 			if err != nil {
 				return err
 			}
@@ -154,39 +186,7 @@ func (bind *VsockStreamBind) Send(buff []byte, end conn.Endpoint) error {
 	return nil
 }
 
-func (bind *VsockStreamBind) startAccepting() {
-	bind.wg.Add(1)
-
-	go func() {
-		for {
-			nfd, newDst, err := unix.Accept(bind.listen_sock)
-			if err != nil {
-				bind.mu.Lock()
-				defer bind.mu.Unlock()
-				if bind.listen_sock != -1 {
-					bind.log.Errorf("Failed to accept, shutdown loop: %v", err)
-					unix.Close(bind.listen_sock)
-					bind.listen_sock = -1
-				}
-				break
-			}
-
-			bind.mu.Lock()
-			if bind.conn_sock == -1 {
-				bind.wg.Done()
-			} else {
-				// In this case we don't bind.wg.Add(1) because
-				// it is an atomic substitution
-				unix.Close(bind.conn_sock)
-			}
-			bind.conn_sock = nfd
-			newDstVM, _ := newDst.(*unix.SockaddrVM)
-			*bind.conn_end.Dst() = *newDstVM
-			bind.mu.Unlock()
-		}
-
-		bind.log.Verbosef("Shutdown accept loop")
-	}()
+func (bind *VsockStreamBind) loopAccept() {
 }
 
 func (bind *VsockStreamBind) makeReceiveFunc() conn.ReceiveFunc {
@@ -224,17 +224,17 @@ func (bind *VsockStreamBind) receive(b []byte) (int, conn.Endpoint, error) {
 	return n, &end, err
 }
 
-func createVsockStreamAndConnect(nend *VsockEndpoint) (int, error) {
+func dialVsock(sa *unix.SockaddrVM) (int, error) {
 	fd, err := unix.Socket(
 		unix.AF_VSOCK,
-		unix.SOCK_STREAM,
+		unix.SOCK_STREAM|socketFlags,
 		0,
 	)
 	if err != nil {
 		return -1, err
 	}
 
-	err = unix.Connect(fd, nend.Dst())
+	err = unix.Connect(fd, sa)
 	if err != nil {
 		unix.Close(fd)
 		return -1, err
@@ -243,12 +243,10 @@ func createVsockStreamAndConnect(nend *VsockEndpoint) (int, error) {
 	return fd, nil
 }
 
-func createVsockStreamAndListen(cid, port uint32) (int, error) {
-	// create socket
-
+func listenVsock(cid, port uint32) (int, error) {
 	fd, err := unix.Socket(
 		unix.AF_VSOCK,
-		unix.SOCK_STREAM,
+		unix.SOCK_STREAM|socketFlags,
 		0,
 	)
 	if err != nil {
@@ -259,8 +257,6 @@ func createVsockStreamAndListen(cid, port uint32) (int, error) {
 		CID:  cid,
 		Port: port,
 	}
-
-	// bind and listen
 
 	if err := unix.Bind(fd, &addr); err != nil {
 		unix.Close(fd)
@@ -273,4 +269,13 @@ func createVsockStreamAndListen(cid, port uint32) (int, error) {
 	}
 
 	return fd, err
+}
+
+func acceptVsock(sock int) (int, *unix.SockaddrVM, error) {
+	nfd, newDst, err := unix.Accept(sock)
+	if err != nil {
+		return -1, nil, err
+	}
+	newDstVM, _ := newDst.(*unix.SockaddrVM)
+	return nfd, newDstVM, nil
 }
