@@ -64,12 +64,11 @@ func (end *VsockEndpoint) DstToBytes() []byte {
 }
 
 func (end *VsockEndpoint) SrcToString() string {
-	// TODO(balena): transform it back to vsock URL
-	return end.SrcIP().String()
+	return fmt.Sprintf("vsock://%d:%d", end.Src().CID, end.Src().Port)
 }
 
 func (end *VsockEndpoint) DstToString() string {
-	return end.DstIP().String()
+	return fmt.Sprintf("vsock://%d:%d", end.Dst().CID, end.Dst().Port)
 }
 
 func (end *VsockEndpoint) ClearDst() {

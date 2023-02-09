@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -16,16 +17,21 @@ func main() {
 	tun, tnet, err := netstack.CreateNetTUN(
 		[]netip.Addr{netip.MustParseAddr("203.0.113.2")},
 		[]netip.Addr{},
-		1420)
+		1420,
+	)
 	if err != nil {
 		log.Panic(err)
 	}
-	logger := device.NewLogger(device.LogLevelVerbose, "")
-	dev := device.NewDevice(tun, vsockconn.NewVsockStreamBind(logger), logger)
+	interfaceName, _ := tun.Name()
+	logger := device.NewLogger(
+		device.LogLevelVerbose,
+		fmt.Sprintf("(%s) ", interfaceName),
+	)
+	dev := device.NewDevice(tun, vsockconn.NewSocketStreamBind(logger), logger)
 	err = dev.IpcSet(`private_key=087ec6e14bbed210e7215cdc73468dfa23f080a1bfb8665b2fd809bd99d28379
 public_key=c4c8e984c5322c8184c72265b92b250fdb63688705f504ba003c88f03393cf28
-endpoint=vsock://3:10000
 allowed_ip=0.0.0.0/0
+endpoint=127.0.0.1:10000
 `)
 	err = dev.Up()
 	if err != nil {
