@@ -6,7 +6,9 @@ import (
 	"net"
 	"net/netip"
 	"sync"
+	"time"
 
+	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 )
@@ -16,15 +18,14 @@ var (
 )
 
 type SocketStreamBind struct {
-	log      *device.Logger
-	mu       sync.RWMutex
-	l        *StreamListener
-	c        *StreamConn
-	received chan Datagram
+	log *device.Logger
+	mu  sync.RWMutex
+	l   *StreamListener
+	c   *StreamConn
 }
 
 func NewSocketStreamBind(logger *device.Logger) conn.Bind {
-	return &SocketStreamBind{log: logger, received: make(chan Datagram)}
+	return &SocketStreamBind{log: logger}
 }
 
 func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
@@ -58,7 +59,7 @@ func (bind *SocketStreamBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, err
 		if err != nil {
 			return nil, 0, err
 		}
-		bind.l = NewStreamListener(l, bind.received, bind.log)
+		bind.l = NewStreamListener(l, bind.log)
 	}
 
 	return []conn.ReceiveFunc{bind.makeReceiveFunc()}, port, nil
@@ -86,20 +87,20 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 		return conn.ErrWrongEndpointType
 	}
 
-	var unlockOnce sync.Once
 	bind.mu.RLock()
-	defer unlockOnce.Do(bind.mu.RUnlock)
+	defer bind.mu.RUnlock()
 
 	if bind.l != nil {
 		return bind.l.Write(buff)
 	}
 
 	if bind.c == nil {
-		unlockOnce.Do(bind.mu.RUnlock)
+		bind.mu.RUnlock()
 		err := bind.lockedConnect(end)
 		if err != nil {
 			return nil
 		}
+		bind.mu.RLock()
 	}
 
 	err := bind.c.Write(buff)
@@ -123,7 +124,7 @@ func (bind *SocketStreamBind) lockedConnect(end conn.Endpoint) error {
 		return err
 	}
 
-	bind.c = NewStreamConn(conn, bind.received, bind.log)
+	bind.c = NewStreamConn(conn, bind.log)
 	return nil
 }
 
@@ -142,20 +143,38 @@ func (bind *SocketStreamBind) lockedDisconnect() {
 
 func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
 	return func(b []byte) (int, conn.Endpoint, error) {
-		datagram := <-bind.received
-		packetlen := len(datagram.Packet)
+		bind.mu.RLock()
+		defer bind.mu.RUnlock()
 
-		if len(b) < packetlen {
-			bind.log.Errorf("Buffer smaller than the incoming packet")
-			return 0, nil, net.ErrClosed
+	again:
+		n, rAddr, err := func() (int, net.Addr, error) {
+			for {
+				if bind.l != nil {
+					return bind.l.Read(b)
+				}
+				if bind.c != nil {
+					return bind.c.Read(b)
+				}
+				bind.mu.RUnlock()
+				time.Sleep(1 * time.Second)
+				bind.mu.RLock()
+			}
+		}()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) || errors.Is(err, unix.ECONNRESET) {
+				bind.mu.RUnlock()
+				time.Sleep(1 * time.Second)
+				bind.mu.RLock()
+				goto again
+			}
+			return 0, nil, err
 		}
-		copy(b[:len(datagram.Packet)], datagram.Packet)
 
-		end, _ := bind.ParseEndpoint(datagram.RemoteAddr.String())
+		end, _ := bind.ParseEndpoint(rAddr.String())
 		endInet4, _ := end.(*SockaddrInet4Endpoint)
 		*endInet4.Src4() = *endInet4.Dst4()
 		endInet4.ClearDst()
 
-		return packetlen, endInet4, nil
+		return n, endInet4, nil
 	}
 }

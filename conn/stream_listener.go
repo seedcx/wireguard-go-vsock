@@ -8,21 +8,19 @@ import (
 )
 
 type StreamListener struct {
-	l        net.Listener
-	quit     chan interface{}
-	mu       sync.RWMutex
-	wg       sync.WaitGroup
-	c        *StreamConn
-	log      *device.Logger
-	received chan<- Datagram
+	l    net.Listener
+	quit chan interface{}
+	mu   sync.RWMutex
+	wg   sync.WaitGroup
+	c    *StreamConn
+	log  *device.Logger
 }
 
-func NewStreamListener(l net.Listener, received chan<- Datagram, logger *device.Logger) *StreamListener {
+func NewStreamListener(l net.Listener, logger *device.Logger) *StreamListener {
 	s := &StreamListener{
-		quit:     make(chan interface{}),
-		l:        l,
-		log:      logger,
-		received: received,
+		quit: make(chan interface{}),
+		l:    l,
+		log:  logger,
 	}
 	s.wg.Add(1)
 	go s.serve()
@@ -37,6 +35,16 @@ func (s *StreamListener) Write(b []byte) error {
 		return net.ErrClosed
 	}
 	return s.c.Write(b)
+}
+
+func (s *StreamListener) Read(b []byte) (int, net.Addr, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if s.c == nil {
+		return 0, nil, net.ErrClosed
+	}
+	return s.c.Read(b)
 }
 
 func (s *StreamListener) Close() {
@@ -89,5 +97,5 @@ func (s *StreamListener) lockedNewConn(conn net.Conn) {
 	if s.c != nil {
 		s.c.Close()
 	}
-	s.c = NewStreamConn(conn, s.received, s.log)
+	s.c = NewStreamConn(conn, s.log)
 }

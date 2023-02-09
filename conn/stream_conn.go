@@ -9,45 +9,34 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 )
 
-const (
-	maxMTU              = 1500
-	ethernetMinimumSize = 64
-)
-
-type Datagram struct {
-	Packet     []byte
-	RemoteAddr net.Addr
-}
-
 type StreamConn struct {
-	conn     net.Conn
-	quit     chan interface{}
-	wg       sync.WaitGroup
-	log      *device.Logger
-	received chan<- Datagram
+	conn       net.Conn
+	quit       chan interface{}
+	mu         sync.RWMutex
+	log        *device.Logger
+	remoteAddr net.Addr
 }
 
-func NewStreamConn(conn net.Conn, received chan<- Datagram, logger *device.Logger) *StreamConn {
-	c := &StreamConn{
-		quit:     make(chan interface{}),
-		conn:     conn,
-		log:      logger,
-		received: received,
+func NewStreamConn(conn net.Conn, logger *device.Logger) *StreamConn {
+	return &StreamConn{
+		quit:       make(chan interface{}),
+		conn:       conn,
+		log:        logger,
+		remoteAddr: conn.RemoteAddr(),
 	}
-	c.wg.Add(1)
-	go func() {
-		c.receive()
-		c.wg.Done()
-	}()
-	return c
 }
 
 func (c *StreamConn) Write(b []byte) error {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Write the packet's size.
 	err := binary.Write(c.conn, binary.LittleEndian, uint16(len(b)))
 	if err != nil {
 		return err
 	}
 
+	// Write as many bytes as required to send over the whole packet.
 	for len(b) > 0 {
 		n, err := c.conn.Write(b)
 		if err != nil {
@@ -59,59 +48,54 @@ func (c *StreamConn) Write(b []byte) error {
 	return nil
 }
 
-func (c *StreamConn) Close() {
-	close(c.quit)
-	c.conn.Close()
-	c.wg.Wait()
+func (c *StreamConn) Read(b []byte) (int, net.Addr, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	// Read the incoming packet's size as a binary value.
+	n, err := io.ReadFull(c.conn, b[:2])
+	if err != nil {
+		select {
+		case <-c.quit:
+			return 0, nil, net.ErrClosed
+		default:
+			if err == io.EOF {
+				return 0, nil, net.ErrClosed
+			}
+			return 0, nil, err
+		}
+	}
+	if n != 2 {
+		c.log.Errorf("Unexpected frame size %d", n)
+		return 0, nil, net.ErrClosed
+	}
+
+	// Decode the incoming packet's size from binary.
+	size := int(binary.LittleEndian.Uint16(b[:2]))
+
+	n, err = io.ReadFull(c.conn, b[:size])
+	if err != nil {
+		select {
+		case <-c.quit:
+			return 0, nil, net.ErrClosed
+		default:
+			if err == io.EOF {
+				return 0, nil, net.ErrClosed
+			}
+			return 0, nil, err
+		}
+	}
+	if n == 0 || n != size {
+		c.log.Errorf("Expected frame size %d, got %d", size, n)
+		return 0, nil, net.ErrClosed
+	}
+
+	return size, c.remoteAddr, nil
 }
 
-func (c *StreamConn) receive() {
-	c.log.Verbosef("Routine: connection worker - started")
-	defer c.log.Verbosef("Routine: connection worker - stopped")
-
-	defer c.conn.Close()
-
-	packetSize := make([]byte, 2)
-	packet := make([]byte, maxMTU+ethernetMinimumSize)
-
-	for {
-		// Read the incoming packet's size as a binary value.
-		n, err := io.ReadFull(c.conn, packetSize)
-		if err != nil {
-			select {
-			case <-c.quit:
-				return
-			default:
-				if err == io.EOF {
-					return
-				}
-				c.log.Errorf("Error reading frame size: %w", err)
-				return
-			}
-		}
-		if n != 2 {
-			c.log.Errorf("Unexpected frame size %d", n)
-			return
-		}
-
-		// Decode the incoming packet's size from binary.
-		size := int(binary.LittleEndian.Uint16(packetSize))
-
-		n, err = io.ReadFull(c.conn, packet[:size])
-		if err != nil {
-			select {
-			case <-c.quit:
-				return
-			default:
-				c.log.Errorf("Error reading frame: %w", err)
-				return
-			}
-		}
-		if n == 0 || n != size {
-			c.log.Errorf("Expected frame size %d, got %d", size, n)
-			return
-		}
-
-		c.received <- Datagram{packet[:size], c.conn.RemoteAddr()}
-	}
+func (c *StreamConn) Close() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	close(c.quit)
+	c.conn.Close()
 }
