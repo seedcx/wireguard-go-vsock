@@ -2,12 +2,70 @@
 
 This is an implementation of WireGuard in Go with support to [`vsock`](https://man7.org/linux/man-pages/man7/vsock.7.html).
 
+## Quick Start
+
+This example assumes an Enclave working as a Wireguard client, whereas the host runs a Wireguard server.
+
+### At the Enclave
+
+A new interface is added with:
+
+```
+wireguard-go-vsock wg0
+```
+
+An IP address and peer can be assigned with `ifconfig(8)` or `ip-address(8)`:
+
+```
+ip address add dev wg0 203.0.113.2 peer 203.0.113.1
+```
+
+The interface can be configured with keys and peer endpoints with the included wg(8) utility:
+
+```
+wg set wg0 \
+  private-key /path/to/enclave-privkey \
+  peer xMjphMUyLIGExyJluSslD9tjaIcF9QS6ADyI8DOTzyg= \
+  allowed-ips 0.0.0.0/0 \
+  endpoint host(2):8172
+```
+
+### At the Host
+
+A new interface is added with:
+
+```
+wireguard-go-vsock wg0
+```
+
+An IP address and peer can be assigned with `ifconfig(8)` or `ip-address(8)`:
+
+```
+ip address add dev wg0 203.0.113.1 peer 203.0.113.2
+```
+
+The interface can be configured with keys and peer endpoints with the included wg(8) utility:
+
+```
+wg set wg0 \
+  private-key /path/to/host-privkey \
+  listen-port 8172 \
+  peer +SjU9sG4bBLyViwQsHxVXFxX/QD1npDI2NiHZyccv3w= \
+  allowed-ips 0.0.0.0/0
+```
+
+After setting both ends, at the host try to execute simple network commands such as:
+
+```
+ping 203.0.113.2
+```
+
 ## Usage
 
 Run:
 
 ```
-$ wireguard-go-vsock wg0
+# wireguard-go-vsock wg0
 ```
 
 This will create an interface and fork into the background. An ephemerous VSOCK port (`VMADDR_PORT_ANY`) will be bound to any VSOCK CID (`VMADDR_CID_ANY`).
@@ -17,14 +75,14 @@ To remove the interface, use the usual `ip link del wg0`, or if your system does
 To run `wireguard-go-vsock` without forking to the background, pass `-f` or `--foreground`:
 
 ```
-$ wireguard-go-vsock -f wg0
+# wireguard-go-vsock -f wg0
 ```
 
 When an interface is running, you may use [`wg(8)`](https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8) to configure it, as well as the usual `ip(8)` and `ifconfig(8)` commands.
 
 To run with more logging you may set the environment variable `LOG_LEVEL=debug`.
 
-Note that this implementation will adopt addresses in the format
+Note that this implementation accepts addresses in the following format when wireguard UAP is used directly (`wg` command doesn't accept it!):
 
 ```
 vsock-address := vsock-address-cid ":" port
