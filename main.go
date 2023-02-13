@@ -209,7 +209,7 @@ func main() {
 	if dgram {
 		bind = vsockconn.NewVsockDgramBind()
 	} else {
-		bind = vsockconn.NewVsockStreamBind(logger)
+		bind = vsockconn.NewSocketStreamBind("vsock", logger)
 	}
 	device := device.NewDevice(tun, bind, logger)
 

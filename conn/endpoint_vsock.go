@@ -1,14 +1,15 @@
 package vsockconn
 
 import (
-	"fmt"
+	"errors"
 	"math"
 	"net/netip"
-	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"unsafe"
 
+	"github.com/mdlayher/vsock"
 	"golang.org/x/sys/unix"
 	"golang.zx2c4.com/wireguard/conn"
 )
@@ -20,6 +21,8 @@ const (
 
 var (
 	_ conn.Endpoint = (*VsockEndpoint)(nil)
+
+	ErrInvalid = errors.New("invalid address")
 )
 
 type VsockEndpoint struct {
@@ -64,11 +67,13 @@ func (end *VsockEndpoint) DstToBytes() []byte {
 }
 
 func (end *VsockEndpoint) SrcToString() string {
-	return fmt.Sprintf("vsock://%d:%d", end.Src().CID, end.Src().Port)
+	addr := vsock.Addr{ContextID: end.Src().CID, Port: end.Src().Port}
+	return addr.String()
 }
 
 func (end *VsockEndpoint) DstToString() string {
-	return fmt.Sprintf("vsock://%d:%d", end.Dst().CID, end.Dst().Port)
+	addr := vsock.Addr{ContextID: end.Dst().CID, Port: end.Dst().Port}
+	return addr.String()
 }
 
 func (end *VsockEndpoint) ClearDst() {
@@ -83,29 +88,30 @@ func (end *VsockEndpoint) ClearSrc() {
 	}
 }
 
-func ParseEndpoint(s string) (conn.Endpoint, error) {
-	var end VsockEndpoint
-
-	u, err := url.Parse(s)
+func ParseVsockAddress(s string) (uint32, uint32, error) {
+	var err error
+	var contextID, port uint64
+	parts := strings.Split(s, ":")
+	if parts[0] == "hypervisor(0)" {
+		contextID = 0
+	} else if parts[0] == "local(1)" {
+		contextID = 1
+	} else if parts[0] == "host(2)" {
+		contextID = 2
+	} else if strings.HasPrefix(parts[0], "vm(") && parts[0][len(parts[0])-1] == ')' {
+		contextID, err = strconv.ParseUint(parts[0][3:len(parts[0])-1], 10, 32)
+		if err != nil {
+			return 0, 0, ErrInvalid
+		} else if contextID < 3 {
+			return 0, 0, ErrInvalid
+		}
+	} else {
+		return 0, 0, ErrInvalid
+	}
+	port, err = strconv.ParseUint(parts[1], 10, 32)
 	if err != nil {
-		return nil, err
+		return 0, 0, ErrInvalid
 	}
 
-	if u.Scheme != "vsock" {
-		return nil, fmt.Errorf("invalid scheme, expected 'vsock', got %s", u.Scheme)
-	}
-	cid, err := strconv.ParseUint(u.Hostname(), 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid cid, expected an uint32, got %s", u.Hostname())
-	}
-	port, err := strconv.ParseUint(u.Port(), 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid port, expected an uint32, got %s", u.Port())
-	}
-
-	dst := end.Dst()
-	dst.CID = uint32(cid)
-	dst.Port = uint32(port)
-	end.ClearSrc()
-	return &end, nil
+	return uint32(contextID), uint32(port), nil
 }
