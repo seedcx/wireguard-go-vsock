@@ -33,7 +33,7 @@ func main() {
 listen_port=10000
 public_key=f928d4f6c1b86c12f2562c10b07c555c5c57fd00f59e90c8d8d88767271cbf7c
 allowed_ip=0.0.0.0/0
-persistent_keepalive_interval=25
+endpoint=127.0.0.1:10001
 `)
 	dev.Up()
 	listener, err := tnet.ListenTCP(&net.TCPAddr{Port: 80})

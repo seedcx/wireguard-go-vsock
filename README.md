@@ -4,61 +4,55 @@ This is an implementation of WireGuard in Go with support to [`vsock`](https://m
 
 ## Quick Start
 
-This example assumes an Enclave working as a Wireguard client, whereas the host runs a Wireguard server.
-
 ### At the Enclave
 
 A new interface is added with:
 
-```
-wireguard-go-vsock wg0
-```
+    wireguard-go-vsock wg0
 
 An IP address and peer can be assigned with `ifconfig(8)` or `ip-address(8)`:
 
-```
-ip address add dev wg0 203.0.113.2 peer 203.0.113.1
-```
+    ip address add dev wg0 203.0.113.2 peer 203.0.113.1
 
-The interface can be configured with keys and peer endpoints with the included wg(8) utility:
+The interface can be configured with keys and peer endpoints with the `wg(8)` utility:
 
-```
-wg set wg0 \
-  private-key /path/to/enclave-privkey \
-  peer xMjphMUyLIGExyJluSslD9tjaIcF9QS6ADyI8DOTzyg= \
-  allowed-ips 0.0.0.0/0 \
-  endpoint host(2):8172
-```
+    wg set wg0 \
+      private-key /path/to/enclave-privkey \
+      listen-port 51820 \
+      peer xMjphMUyLIGExyJluSslD9tjaIcF9QS6ADyI8DOTzyg= \
+      allowed-ips 0.0.0.0/0 \
+      endpoint host(2):8172
+
+Finally, the interface can then be activated with `ifconfig(8)` or `ip-link(8)`:
+
+    ip link set up dev wg0
 
 ### At the Host
 
 A new interface is added with:
 
-```
-wireguard-go-vsock wg0
-```
+    wireguard-go-vsock wg0
 
 An IP address and peer can be assigned with `ifconfig(8)` or `ip-address(8)`:
 
-```
-ip address add dev wg0 203.0.113.1 peer 203.0.113.2
-```
+    ip address add dev wg0 203.0.113.1 peer 203.0.113.2
 
-The interface can be configured with keys and peer endpoints with the included wg(8) utility:
+The interface can be configured with keys and peer endpoints with the `wg(8)` utility:
 
-```
-wg set wg0 \
-  private-key /path/to/host-privkey \
-  listen-port 8172 \
-  peer +SjU9sG4bBLyViwQsHxVXFxX/QD1npDI2NiHZyccv3w= \
-  allowed-ips 0.0.0.0/0
-```
+    wg set wg0 \
+      private-key /path/to/host-privkey \
+      listen-port 8172 \
+      peer +SjU9sG4bBLyViwQsHxVXFxX/QD1npDI2NiHZyccv3w= \
+      allowed-ips 0.0.0.0/0 \
+      endpoint vm(6):51820
+
+Activate the interface with `ifconfig(8)` or `ip-link(8)`:
+
+    ip link set up dev wg0
 
 After setting both ends, at the host try to execute simple network commands such as:
 
-```
-ping 203.0.113.2
-```
+    ping 203.0.113.2
 
 ## Usage
 
