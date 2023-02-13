@@ -271,7 +271,7 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 		if _, ok := bind.dialers[se.dst.String()]; !ok {
 			bind.dialers[se.dst.String()] = true
 			bind.wg.Add(1)
-			go bind.dial(se.dst)
+			go bind.dial(bind.ctx, bind.b, se.dst)
 		}
 		return net.ErrClosed
 	}
@@ -307,9 +307,10 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 }
 
 func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
+	ctx := bind.ctx
 	return func(b []byte) (int, conn.Endpoint, error) {
 		select {
-		case <-bind.ctx.Done():
+		case <-ctx.Done():
 			return 0, nil, net.ErrClosed
 		case d := <-bind.received:
 			pktlen := len(d.b)
@@ -344,10 +345,10 @@ func (bind *SocketStreamBind) handleConn(conn net.Conn, reconnect chan<- interfa
 	defer bind.mu.Unlock()
 	bind.conns[conn.RemoteAddr().String()] = conn
 	bind.wg.Add(1)
-	go bind.read(conn, reconnect)
+	go bind.read(bind.ctx, conn, reconnect)
 }
 
-func (bind *SocketStreamBind) read(conn net.Conn, reconnect chan<- interface{}) {
+func (bind *SocketStreamBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
 	bind.log.Verbosef("Routine: reader worker - started")
 	defer bind.log.Verbosef("Routine: reader worker - stopped")
 
@@ -364,7 +365,7 @@ func (bind *SocketStreamBind) read(conn net.Conn, reconnect chan<- interface{}) 
 		n, err := bind.readFrame(conn, b)
 		if err != nil {
 			select {
-			case <-bind.ctx.Done():
+			case <-ctx.Done():
 				return
 			default:
 				reconnect <- true
@@ -405,13 +406,12 @@ func (bind *SocketStreamBind) readFrame(conn net.Conn, b []byte) (int, error) {
 	return n, nil
 }
 
-func (bind *SocketStreamBind) dial(dst net.Addr) {
+func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr) {
 	bind.log.Verbosef("Routine: dialer worker - started")
 	defer bind.log.Verbosef("Routine: dialer worker - stopped")
 
 	defer bind.wg.Done()
 
-	b := bind.b
 	reconnect := make(chan interface{})
 
 	for {
