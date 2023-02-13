@@ -321,11 +321,15 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 
 func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
 	return func(b []byte) (int, conn.Endpoint, error) {
-		d := <-bind.received
-		pktlen := len(d.b)
-		copy(b[:pktlen], d.b)
-		end := StreamEndpoint{dst: d.src}
-		return pktlen, &end, nil
+		select {
+		case <-bind.ctx.Done():
+			return 0, nil, net.ErrClosed
+		case d := <-bind.received:
+			pktlen := len(d.b)
+			copy(b[:pktlen], d.b)
+			end := StreamEndpoint{dst: d.src}
+			return pktlen, &end, nil
+		}
 	}
 }
 
