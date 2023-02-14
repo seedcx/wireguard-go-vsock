@@ -14,7 +14,6 @@ import (
 )
 
 func main() {
-	network := "vsock"
 	interfaceName := "wg0"
 	localIP, remoteIP := "203.0.113.1", "203.0.113.2"
 	tun, err := tun.CreateTUN(interfaceName, device.DefaultMTU)
@@ -33,7 +32,7 @@ func main() {
 		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
 	)
-	bind := vsockconn.NewSocketStreamBind(network, logger)
+	bind := vsockconn.NewBind(logger)
 	dev := device.NewDevice(tun, bind, logger)
 	dev.IpcSet(`private_key=003ed5d73b55806c30de3f8a7bdab38af13539220533055e635690b8b87ad641
 listen_port=10000

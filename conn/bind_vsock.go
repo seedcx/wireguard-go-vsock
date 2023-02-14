@@ -3,10 +3,14 @@ package vsockconn
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,11 +27,16 @@ const (
 	defaultReconnectIntervalMin    = 500 * time.Millisecond
 	defaultReconnectIntervalMax    = 30 * time.Second
 	defaultReconnectIntervalFactor = 2
+
+	AnyCID  = math.MaxUint32 // VMADDR_CID_ANY (-1U)
+	AnyPort = math.MaxUint32 // VMADDR_PORT_ANY (-1U)
 )
 
 var (
 	_ conn.Bind     = (*SocketStreamBind)(nil)
 	_ conn.Endpoint = StreamEndpoint{}
+
+	ErrInvalid = errors.New("invalid address")
 )
 
 type StreamEndpoint struct {
@@ -104,6 +113,34 @@ func (e StreamEndpoint) SrcToString() string {
 	return ""
 }
 
+func ParseVsockAddress(s string) (uint32, uint32, error) {
+	var err error
+	var contextID, port uint64
+	parts := strings.Split(s, ":")
+	if parts[0] == "hypervisor(0)" {
+		contextID = 0
+	} else if parts[0] == "local(1)" {
+		contextID = 1
+	} else if parts[0] == "host(2)" {
+		contextID = 2
+	} else if strings.HasPrefix(parts[0], "vm(") && parts[0][len(parts[0])-1] == ')' {
+		contextID, err = strconv.ParseUint(parts[0][3:len(parts[0])-1], 10, 32)
+		if err != nil {
+			return 0, 0, ErrInvalid
+		} else if contextID < 3 {
+			return 0, 0, ErrInvalid
+		}
+	} else {
+		return 0, 0, ErrInvalid
+	}
+	port, err = strconv.ParseUint(parts[1], 10, 32)
+	if err != nil {
+		return 0, 0, ErrInvalid
+	}
+
+	return uint32(contextID), uint32(port), nil
+}
+
 type Option func(bind *SocketStreamBind)
 
 func ReconnectIntervalMin(t time.Duration) Option {
@@ -127,6 +164,12 @@ func ReconnectIntervalFactor(factor float64) Option {
 func ReconnectIntervalJitter(b bool) Option {
 	return func(bind *SocketStreamBind) {
 		bind.b.Jitter = b
+	}
+}
+
+func Network(network string) Option {
+	return func(bind *SocketStreamBind) {
+		bind.network = network
 	}
 }
 
@@ -154,7 +197,7 @@ type SocketStreamBind struct {
 	received chan streamDatagram
 }
 
-func NewSocketStreamBind(network string, logger *device.Logger, opts ...Option) conn.Bind {
+func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
@@ -165,7 +208,7 @@ func NewSocketStreamBind(network string, logger *device.Logger, opts ...Option) 
 			Factor: defaultReconnectIntervalFactor,
 			Jitter: true,
 		},
-		network:  network,
+		network:  "vsock",
 		log:      logger,
 		ctx:      ctx,
 		cancel:   cancel,
