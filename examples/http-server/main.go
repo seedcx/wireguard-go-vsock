@@ -25,7 +25,10 @@ func main() {
 	if err == nil {
 		interfaceName = realInterfaceName
 	}
-	exec.Command("ip", "address", "add", "dev", interfaceName, localIP, "peer", remoteIP)
+	cmd := exec.Command("ip", "address", "add", "dev", interfaceName, localIP, "peer", remoteIP)
+	if err := cmd.Run(); err != nil {
+		log.Panic(err)
+	}
 	logger := device.NewLogger(
 		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
@@ -39,7 +42,10 @@ allowed_ip=0.0.0.0/0
 endpoint=vm(6):10001
 `)
 	dev.Up()
-	exec.Command("ip", "link", "set", "up", "dev", interfaceName)
+	cmd = exec.Command("ip", "link", "set", "up", "dev", interfaceName)
+	if err := cmd.Run(); err != nil {
+		log.Panic(err)
+	}
 
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("> %s - %s - %s", request.RemoteAddr, request.URL.String(), request.UserAgent())
