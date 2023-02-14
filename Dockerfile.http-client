@@ -1,0 +1,12 @@
+FROM golang:1.19.5-alpine3.17 as builder
+
+WORKDIR /build
+COPY ./ .
+
+RUN cd examples/http-client && go build
+
+FROM alpine:3.17
+
+COPY --from=builder /build/examples/http-client/http-client /
+
+CMD /http-client
