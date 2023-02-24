@@ -507,6 +507,7 @@ func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst n
 			}
 		}
 
+		b.Reset()
 		bind.handleConn(conn, reconnect)
 		select {
 		case <-bind.ctx.Done():
