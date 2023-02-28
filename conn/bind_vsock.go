@@ -352,7 +352,7 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 			l.Remove(l.Front())
 		}
 
-		return net.ErrClosed
+		return nil
 	}
 
 	return err
