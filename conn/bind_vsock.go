@@ -1,6 +1,7 @@
 package vsockconn
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -203,6 +204,7 @@ type SocketStreamBind struct {
 	l net.Listener
 
 	conns   map[string]net.Conn
+	pending map[string]*list.List
 	network string
 
 	b       backoff.Backoff
@@ -230,6 +232,7 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 		cancel:    cancel,
 		conns:     make(map[string]net.Conn),
 		dialers:   make(map[string]interface{}),
+		pending:   make(map[string]*list.List),
 		received:  make(chan streamDatagram),
 		handshake: func(_ net.Conn) error { return nil },
 	}
@@ -329,11 +332,26 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 	if !found {
 		bind.mu.Lock()
 		defer bind.mu.Unlock()
-		if _, ok := bind.dialers[se.dst.String()]; !ok {
-			bind.dialers[se.dst.String()] = true
+
+		key := se.dst.String()
+		if _, ok := bind.dialers[key]; !ok {
+			bind.dialers[key] = true
 			bind.wg.Add(1)
 			go bind.dial(bind.ctx, bind.b, se.dst)
 		}
+
+		l, ok := bind.pending[key]
+		if !ok {
+			l = list.New()
+			bind.pending[key] = l
+		}
+		b := make([]byte, len(buff))
+		copy(b, buff)
+		l.PushBack(b)
+		for l.Len() > 2 {
+			l.Remove(l.Front())
+		}
+
 		return net.ErrClosed
 	}
 
@@ -349,22 +367,31 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 		return false, nil
 	}
 
+	err := bind.marshal(conn, b)
+	if err != nil {
+		return ok, err
+	}
+
+	return ok, nil
+}
+
+func (bind *SocketStreamBind) marshal(conn net.Conn, b []byte) error {
 	// Write the packet's size.
 	err := binary.Write(conn, binary.LittleEndian, uint16(len(b)))
 	if err != nil {
-		return ok, err
+		return err
 	}
 
 	// Write as many bytes as required to send over the whole packet.
 	for len(b) > 0 {
 		n, err := conn.Write(b)
 		if err != nil {
-			return ok, err
+			return err
 		}
 		b = b[n:]
 	}
 
-	return ok, nil
+	return nil
 }
 
 func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
@@ -397,11 +424,11 @@ func (bind *SocketStreamBind) serve() {
 			return
 		}
 		bind.log.Verbosef("New connection from: %v", conn.RemoteAddr())
-		bind.handleConn(conn, make(chan interface{}))
+		bind.handleConn(conn, nil, make(chan interface{}))
 	}
 }
 
-func (bind *SocketStreamBind) handleConn(conn net.Conn, reconnect chan<- interface{}) {
+func (bind *SocketStreamBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
 	if err := bind.handshake(conn); err != nil {
 		bind.log.Errorf("Handshake error %v", err)
 		conn.Close()
@@ -413,6 +440,23 @@ func (bind *SocketStreamBind) handleConn(conn net.Conn, reconnect chan<- interfa
 	defer bind.mu.Unlock()
 	bind.conns[conn.RemoteAddr().String()] = conn
 	bind.wg.Add(1)
+
+	// If there are pending frames, dispatch them all now
+
+	if dst != nil {
+		key := dst.String()
+		l, ok := bind.pending[key]
+		if ok {
+			for l.Len() > 0 {
+				ref := l.Front()
+				b, _ := ref.Value.([]byte)
+				bind.marshal(conn, b)
+				l.Remove(ref)
+			}
+			delete(bind.pending, key)
+		}
+	}
+
 	go bind.read(bind.ctx, conn, reconnect)
 }
 
@@ -508,7 +552,7 @@ func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst n
 		}
 
 		b.Reset()
-		bind.handleConn(conn, reconnect)
+		bind.handleConn(conn, dst, reconnect)
 		select {
 		case <-bind.ctx.Done():
 			return
