@@ -2,12 +2,7 @@ package vsockconn
 
 import (
 	"errors"
-	"fmt"
-	"math"
 	"net"
-	"net/netip"
-	"net/url"
-	"strconv"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -16,71 +11,9 @@ import (
 	"golang.zx2c4.com/wireguard/conn"
 )
 
-const (
-	anyCID  = math.MaxUint32 // VMADDR_CID_ANY (-1U)
-	anyPort = math.MaxUint32 // VMADDR_PORT_ANY (-1U)
+var (
+	_ conn.Bind = (*VsockDgramBind)(nil)
 )
-
-type VsockDgramEndpoint struct {
-	mu  sync.Mutex
-	dst [unsafe.Sizeof(unix.SockaddrVM{})]byte
-	src [unsafe.Sizeof(unix.SockaddrVM{})]byte
-}
-
-func (endpoint *VsockDgramEndpoint) Src() *unix.SockaddrVM {
-	return (*unix.SockaddrVM)(unsafe.Pointer(&endpoint.src[0]))
-}
-
-func (endpoint *VsockDgramEndpoint) Dst() *unix.SockaddrVM {
-	return (*unix.SockaddrVM)(unsafe.Pointer(&endpoint.dst[0]))
-}
-
-func (end *VsockDgramEndpoint) SrcIP() netip.Addr {
-	return netip.AddrFrom4([4]byte{
-		byte(end.Src().CID >> 24),
-		byte(end.Src().CID >> 16),
-		byte(end.Src().CID >> 8),
-		byte(end.Src().CID),
-	})
-}
-
-func (end *VsockDgramEndpoint) DstIP() netip.Addr {
-	return netip.AddrFrom4([4]byte{
-		byte(end.Dst().CID >> 24),
-		byte(end.Dst().CID >> 16),
-		byte(end.Dst().CID >> 8),
-		byte(end.Dst().CID),
-	})
-}
-
-func (end *VsockDgramEndpoint) DstToBytes() []byte {
-	return []byte{
-		byte(end.Dst().CID >> 24),
-		byte(end.Dst().CID >> 16),
-		byte(end.Dst().CID >> 8),
-		byte(end.Dst().CID),
-	}
-}
-
-func (end *VsockDgramEndpoint) SrcToString() string {
-	return end.SrcIP().String()
-}
-
-func (end *VsockDgramEndpoint) DstToString() string {
-	return netip.AddrPortFrom(end.DstIP(), uint16(end.Dst().Port)).String()
-}
-
-func (end *VsockDgramEndpoint) ClearDst() {
-	for i := range end.dst {
-		end.dst[i] = 0
-	}
-}
-
-func (end *VsockDgramEndpoint) ClearSrc() {
-	for i := range end.src {
-		end.src[i] = 0
-	}
-}
 
 type VsockDgramBind struct {
 	// mu guards vs.
@@ -88,44 +21,23 @@ type VsockDgramBind struct {
 	sock int
 }
 
-func NewVsockDgramBind() conn.Bind { return &VsockDgramBind{} }
-
-var (
-	_ conn.Endpoint = (*VsockDgramEndpoint)(nil)
-	_ conn.Bind     = (*VsockDgramBind)(nil)
-)
+func NewVsockDgramBind() conn.Bind { return &VsockDgramBind{sock: -1} }
 
 func (*VsockDgramBind) ParseEndpoint(s string) (conn.Endpoint, error) {
-	var end VsockDgramEndpoint
-
-	u, err := url.Parse(s)
-	if err != nil {
-		return nil, err
-	}
-
-	if u.Scheme != "vsock" {
-		return nil, fmt.Errorf("invalid scheme, expected 'vsock', got %s", u.Scheme)
-	}
-	cid, err := strconv.ParseUint(u.Hostname(), 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid cid, expected an uint32, got %s", u.Hostname())
-	}
-	port, err := strconv.ParseUint(u.Port(), 10, 32)
-	if err != nil {
-		return nil, fmt.Errorf("invalid port, expected an uint32, got %s", u.Port())
-	}
-
-	dst := end.Dst()
-	dst.CID = uint32(cid)
-	dst.Port = uint32(port)
-	end.ClearSrc()
-	return &end, nil
+	return ParseEndpoint(s)
 }
 
 func (bind *VsockDgramBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	// TODO(balena): VSOCK ports are 32-bits, this may break at corner cases, but
-	// in general apps can use 16-bit ones.
-	fns, newPort, err := bind.OpenContextID(anyCID, uint32(port))
+	// in general apps can use 16-bit ones. We also convert the AF_INET port 0 to
+	// AnyPort (-1U).
+	var port32 uint32
+	if port == 0 {
+		port32 = AnyPort
+	} else {
+		port32 = uint32(port)
+	}
+	fns, newPort, err := bind.OpenContextID(AnyCID, port32)
 	return fns, *(*uint16)(unsafe.Pointer(&newPort)), err
 }
 
@@ -137,6 +49,10 @@ func (bind *VsockDgramBind) OpenContextID(cid, port uint32) ([]conn.ReceiveFunc,
 	var newPort uint32
 	var tries int
 
+	if bind.sock != -1 {
+		return nil, 0, conn.ErrBindAlreadyOpen
+	}
+
 	originalPort := port
 
 again:
@@ -144,7 +60,7 @@ again:
 
 	sock, newPort, err := createVsockDgram(cid, port)
 	if err != nil {
-		if originalPort == anyPort && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
+		if originalPort == AnyPort && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
 			unix.Close(sock)
 			tries++
 			goto again
@@ -186,7 +102,7 @@ func (bind *VsockDgramBind) Close() error {
 }
 
 func (bind *VsockDgramBind) Send(buff []byte, end conn.Endpoint) error {
-	nend, ok := end.(*VsockDgramEndpoint)
+	nend, ok := end.(*VsockEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
@@ -195,7 +111,7 @@ func (bind *VsockDgramBind) Send(buff []byte, end conn.Endpoint) error {
 	if bind.sock == -1 {
 		return net.ErrClosed
 	}
-	return sendVsockDgram(bind.sock, nend, buff)
+	return unix.Sendto(bind.sock, buff, 0, nend.Dst())
 }
 
 func createVsockDgram(cid, port uint32) (int, uint32, error) {
@@ -215,7 +131,7 @@ func createVsockDgram(cid, port uint32) (int, uint32, error) {
 		Port: port,
 	}
 
-	// set sockopts and bind
+	// bind and double check the bound port
 
 	if err := unix.Bind(fd, &addr); err != nil {
 		unix.Close(fd)
@@ -230,13 +146,6 @@ func createVsockDgram(cid, port uint32) (int, uint32, error) {
 	return fd, addr.Port, err
 }
 
-func sendVsockDgram(sock int, end *VsockDgramEndpoint, buff []byte) error {
-	end.mu.Lock()
-	defer end.mu.Unlock()
-
-	return unix.Sendto(sock, buff, 0, end.Dst())
-}
-
 func (bind *VsockDgramBind) receiveVsockDgram(buf []byte) (int, conn.Endpoint, error) {
 	bind.mu.RLock()
 	defer bind.mu.RUnlock()
@@ -247,7 +156,7 @@ func (bind *VsockDgramBind) receiveVsockDgram(buf []byte) (int, conn.Endpoint, e
 	if err != nil {
 		return 0, nil, err
 	}
-	var end VsockDgramEndpoint
+	var end VsockEndpoint
 	if newDstVM, ok := newDst.(*unix.SockaddrVM); ok {
 		*end.Dst() = *newDstVM
 	}

@@ -6,8 +6,10 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"syscall"
 
+	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
@@ -27,7 +29,7 @@ const (
 )
 
 func printUsage() {
-	fmt.Printf("Usage: %s [-f/--foreground] INTERFACE-NAME\n", os.Args[0])
+	fmt.Printf("Usage: %s [-f/--foreground] [-s/--stream|-d/--dgram] INTERFACE-NAME\n", os.Args[0])
 }
 
 func main() {
@@ -37,30 +39,40 @@ func main() {
 	}
 
 	var foreground bool
+	var dgram bool
 	var interfaceName string
 	if len(os.Args) < 2 || len(os.Args) > 3 {
 		printUsage()
 		return
 	}
 
-	switch os.Args[1] {
+	i := 1
+	for ; i < len(os.Args); i++ {
+		flag := os.Args[i]
+		if !strings.HasPrefix(flag, "-") {
+			break
+		}
 
-	case "-f", "--foreground":
-		foreground = true
-		if len(os.Args) != 3 {
+		switch flag {
+
+		case "-f", "--foreground":
+			foreground = true
+		case "-d", "--dgram":
+			dgram = true
+		case "-s", "--stream":
+			dgram = false
+		default:
 			printUsage()
 			return
 		}
-		interfaceName = os.Args[2]
-
-	default:
-		foreground = false
-		if len(os.Args) != 2 {
-			printUsage()
-			return
-		}
-		interfaceName = os.Args[1]
 	}
+
+	if i != len(os.Args)-1 {
+		printUsage()
+		return
+	}
+
+	interfaceName = os.Args[len(os.Args)-1]
 
 	if !foreground {
 		foreground = os.Getenv(ENV_WG_PROCESS_FOREGROUND) == "1"
@@ -193,7 +205,13 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tun, vsockconn.NewVsockDgramBind(), logger)
+	var bind conn.Bind
+	if dgram {
+		bind = vsockconn.NewVsockDgramBind()
+	} else {
+		bind = vsockconn.NewVsockStreamBind(logger)
+	}
+	device := device.NewDevice(tun, bind, logger)
 
 	logger.Verbosef("Device started")
 
