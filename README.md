@@ -62,9 +62,7 @@ After setting both ends, at the host try to execute simple network commands such
 
 Run:
 
-```
-# wireguard-go-vsock wg0
-```
+    wireguard-go-vsock wg0
 
 This will create an interface and fork into the background. An ephemerous VSOCK port (`VMADDR_PORT_ANY`) will be bound to any VSOCK CID (`VMADDR_CID_ANY`).
 
@@ -72,9 +70,7 @@ To remove the interface, use the usual `ip link del wg0`, or if your system does
 
 To run `wireguard-go-vsock` without forking to the background, pass `-f` or `--foreground`:
 
-```
-# wireguard-go-vsock -f wg0
-```
+    wireguard-go-vsock -f wg0
 
 When an interface is running, you may use [`wg(8)`](https://git.zx2c4.com/wireguard-tools/about/src/man/wg.8) to configure it, as well as the usual `ip(8)` and `ifconfig(8)` commands.
 
@@ -82,20 +78,16 @@ To run with more logging you may set the environment variable `LOG_LEVEL=debug`.
 
 Note that this implementation accepts addresses in the following format when wireguard UAP is used directly (`wg` command doesn't accept it!):
 
-```
-vsock-address := vsock-address-cid ":" port
-vsock-address-cid := hypervisor-address | local-address | host-address | vm-address
-hypervisor-address := "hypervisor(0)"
-local-address := "local(1)"
-host-address := "host(2)"
-vm-address := "vm(" vm-contextID ")"
-vm-contextID := UINT32 ≥ 3
-port := UINT32
-```
+    vsock-address := vsock-address-cid ":" port
+    vsock-address-cid := hypervisor-address | local-address | host-address | vm-address
+    hypervisor-address := "hypervisor(0)"
+    local-address := "local(1)"
+    host-address := "host(2)"
+    vm-address := "vm(" vm-contextID ")"
+    vm-contextID := UINT32 ≥ 3
+    port := UINT32
 
 Note that due to underlying limitations at the base `wireguard-go`, the port should not be set as 32-bits, but 16-bits instead (as in Internet addresses).
-
-By default, `wireguard-go-vsock` uses `SOCK_STREAM` socket type. If you want to use `SOCK_DGRAM`, just add `-d` to the command line. Just note that `SOCK_DGRAM` isn't supported by every hypervisor, if not supported, you should see `ENODEV` (no such device) at the logs. The `SOCK_STREAM` vsock implementation supports a single connection only, which is the most common use case when dealing with AWS Nitro Enclaves.
 
 ## Platforms
 
@@ -111,11 +103,9 @@ There is no support yet.
 
 This requires an installation of [go](https://golang.org) ≥ 1.19.
 
-```
-$ git clone https://github.com/balena/wireguard-go-vsock
-$ cd wireguard-go-vsock
-$ make
-```
+    $ git clone https://github.com/balena/wireguard-go-vsock
+    $ cd wireguard-go-vsock
+    $ make
 
 ## License
 

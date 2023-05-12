@@ -17,7 +17,6 @@ import (
 const retryInterval = 5 * time.Second
 
 func main() {
-	network := "vsock"
 	interfaceName := "wg0"
 	localIP, remoteIP := "203.0.113.2", "203.0.113.1"
 	tun, err := tun.CreateTUN(interfaceName, device.DefaultMTU)
@@ -36,7 +35,7 @@ func main() {
 		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
 	)
-	bind := vsockconn.NewSocketStreamBind(network, logger)
+	bind := vsockconn.NewBind(logger)
 	dev := device.NewDevice(tun, bind, logger)
 	err = dev.IpcSet(`private_key=087ec6e14bbed210e7215cdc73468dfa23f080a1bfb8665b2fd809bd99d28379
 listen_port=10001

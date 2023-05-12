@@ -9,7 +9,6 @@ import (
 	"strings"
 	"syscall"
 
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
@@ -29,7 +28,7 @@ const (
 )
 
 func printUsage() {
-	fmt.Printf("Usage: %s [-f/--foreground] [-s/--stream|-d/--dgram] INTERFACE-NAME\n", os.Args[0])
+	fmt.Printf("Usage: %s [-f/--foreground] INTERFACE-NAME\n", os.Args[0])
 }
 
 func main() {
@@ -39,7 +38,6 @@ func main() {
 	}
 
 	var foreground bool
-	var dgram bool
 	var interfaceName string
 	if len(os.Args) < 2 || len(os.Args) > 3 {
 		printUsage()
@@ -57,10 +55,6 @@ func main() {
 
 		case "-f", "--foreground":
 			foreground = true
-		case "-d", "--dgram":
-			dgram = true
-		case "-s", "--stream":
-			dgram = false
 		default:
 			printUsage()
 			return
@@ -205,12 +199,7 @@ func main() {
 		return
 	}
 
-	var bind conn.Bind
-	if dgram {
-		bind = vsockconn.NewVsockDgramBind()
-	} else {
-		bind = vsockconn.NewSocketStreamBind("vsock", logger)
-	}
+	bind := vsockconn.NewBind(logger)
 	device := device.NewDevice(tun, bind, logger)
 
 	logger.Verbosef("Device started")
