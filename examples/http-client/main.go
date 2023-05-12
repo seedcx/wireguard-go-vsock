@@ -6,12 +6,15 @@ import (
 	"log"
 	"net/http"
 	"os/exec"
+	"time"
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
 	vsockconn "github.com/balena/wireguard-go-vsock/conn"
 )
+
+const retryInterval = 5 * time.Second
 
 func main() {
 	network := "vsock"
@@ -48,7 +51,8 @@ endpoint=host(2):10000
 	for {
 		resp, err := client.Get(fmt.Sprintf("http://%s/", remoteIP))
 		if err != nil {
-			log.Printf("HTTP Client error: %v", err)
+			log.Printf("HTTP Client error %v, retrying in %s", err, retryInterval)
+			time.Sleep(retryInterval)
 			continue
 		}
 		body, err := io.ReadAll(resp.Body)
@@ -56,5 +60,6 @@ endpoint=host(2):10000
 			log.Panic(err)
 		}
 		log.Println(string(body))
+		time.Sleep(retryInterval)
 	}
 }
