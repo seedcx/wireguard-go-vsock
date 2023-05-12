@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"log"
 	"net"
@@ -22,11 +23,15 @@ func main() {
 	if err != nil {
 		log.Panic(err)
 	}
-	logger := device.NewLogger(device.LogLevelVerbose, "")
-	dev := device.NewDevice(tun, vsockconn.NewVsockStreamBind(logger), logger)
-	dev.IpcSet(`private_key=a8dac1d8a70a751f0f699fb14ba1cff7b79cf4fbd8f09f44c6e6a90d0369604f
+	interfaceName, _ := tun.Name()
+	logger := device.NewLogger(
+		device.LogLevelVerbose,
+		fmt.Sprintf("(%s) ", interfaceName),
+	)
+	dev := device.NewDevice(tun, vsockconn.NewSocketStreamBind(logger), logger)
+	dev.IpcSet(`private_key=003ed5d73b55806c30de3f8a7bdab38af13539220533055e635690b8b87ad641
 listen_port=10000
-public_key=25123c5dcd3328ff645e4f2a3fce0d754400d3887a0cb7c56f0267e20fbf3c5b
+public_key=f928d4f6c1b86c12f2562c10b07c555c5c57fd00f59e90c8d8d88767271cbf7c
 allowed_ip=0.0.0.0/0
 persistent_keepalive_interval=25
 `)
