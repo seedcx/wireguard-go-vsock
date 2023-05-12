@@ -173,6 +173,14 @@ func Network(network string) Option {
 	}
 }
 
+type HandshakeFunc func(conn net.Conn) error
+
+func Handshake(handshake HandshakeFunc) Option {
+	return func(bind *SocketStreamBind) {
+		bind.handshake = handshake
+	}
+}
+
 type streamDatagram struct {
 	b   []byte
 	src net.Addr
@@ -195,6 +203,8 @@ type SocketStreamBind struct {
 	dialers map[string]interface{}
 
 	received chan streamDatagram
+
+	handshake HandshakeFunc
 }
 
 func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
@@ -208,13 +218,14 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 			Factor: defaultReconnectIntervalFactor,
 			Jitter: true,
 		},
-		network:  "vsock",
-		log:      logger,
-		ctx:      ctx,
-		cancel:   cancel,
-		conns:    make(map[string]net.Conn),
-		dialers:  make(map[string]interface{}),
-		received: make(chan streamDatagram),
+		network:   "vsock",
+		log:       logger,
+		ctx:       ctx,
+		cancel:    cancel,
+		conns:     make(map[string]net.Conn),
+		dialers:   make(map[string]interface{}),
+		received:  make(chan streamDatagram),
+		handshake: func(_ net.Conn) error { return nil },
 	}
 
 	for _, opt := range opts {
@@ -385,6 +396,13 @@ func (bind *SocketStreamBind) serve() {
 }
 
 func (bind *SocketStreamBind) handleConn(conn net.Conn, reconnect chan<- interface{}) {
+	if err := bind.handshake(conn); err != nil {
+		bind.log.Errorf("Handshake error %v", err)
+		conn.Close()
+		reconnect <- true
+		return
+	}
+
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 	bind.conns[conn.RemoteAddr().String()] = conn
