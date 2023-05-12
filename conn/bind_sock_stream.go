@@ -7,7 +7,6 @@ import (
 	"io"
 	"net"
 	"net/netip"
-	"strings"
 	"sync"
 	"time"
 
@@ -93,26 +92,14 @@ func (e StreamEndpoint) DstToBytes() []byte {
 
 func (e StreamEndpoint) DstToString() string {
 	if e.dst != nil {
-		switch dst := e.dst.(type) {
-		case *net.TCPAddr:
-			return dst.AddrPort().Addr().String()
-		case *vsock.Addr:
-			parts := strings.Split(dst.String(), ":")
-			return parts[0]
-		}
+		return e.dst.String()
 	}
 	return ""
 }
 
 func (e StreamEndpoint) SrcToString() string {
 	if e.src != nil {
-		switch src := e.src.(type) {
-		case *net.TCPAddr:
-			return src.AddrPort().Addr().String()
-		case *vsock.Addr:
-			parts := strings.Split(src.String(), ":")
-			return parts[0]
-		}
+		return e.src.String()
 	}
 	return ""
 }
