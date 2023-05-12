@@ -119,7 +119,7 @@ func createVsockDgram(cid, port uint32) (int, uint32, error) {
 
 	fd, err := unix.Socket(
 		unix.AF_VSOCK,
-		unix.SOCK_DGRAM,
+		unix.SOCK_DGRAM|socketFlags,
 		0,
 	)
 	if err != nil {
