@@ -160,16 +160,17 @@ type SocketStreamBind struct {
 
 	l net.Listener
 
-	conns   map[net.Addr]net.Conn
+	conns   map[string]net.Conn
 	network string
 
 	b       backoff.Backoff
-	dialers map[net.Addr]interface{}
+	dialers map[string]interface{}
 
 	received chan streamDatagram
 }
 
-func NewSocketStreamBind(ctx context.Context, network string, logger *device.Logger, opts ...Option) conn.Bind {
+func NewSocketStreamBind(network string, logger *device.Logger, opts ...Option) conn.Bind {
+	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
 	bind := &SocketStreamBind{
@@ -179,10 +180,13 @@ func NewSocketStreamBind(ctx context.Context, network string, logger *device.Log
 			Factor: defaultReconnectIntervalFactor,
 			Jitter: true,
 		},
-		network: network,
-		log:     logger,
-		ctx:     ctx,
-		cancel:  cancel,
+		network:  network,
+		log:      logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		conns:    make(map[string]net.Conn),
+		dialers:  make(map[string]interface{}),
+		received: make(chan streamDatagram),
 	}
 
 	for _, opt := range opts {
@@ -201,7 +205,7 @@ func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 				return nil, err
 			}
 			end.dst = net.TCPAddrFromAddrPort(e)
-			return end, nil
+			return &end, nil
 		} else {
 			for {
 				var err error
@@ -229,7 +233,7 @@ func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 					ContextID: uint32(contextID),
 					Port:      uint32(port),
 				}
-				return end, nil
+				return &end, nil
 			}
 		}
 	}
@@ -279,8 +283,12 @@ func (bind *SocketStreamBind) Close() error {
 	bind.cancel()
 	if bind.l != nil {
 		bind.l.Close()
+		bind.l = nil
 	}
 	bind.wg.Wait()
+
+	ctx := context.Background()
+	bind.ctx, bind.cancel = context.WithCancel(ctx)
 	return nil
 }
 
@@ -294,8 +302,8 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 	if !found {
 		bind.mu.Lock()
 		defer bind.mu.Unlock()
-		if _, ok := bind.dialers[se.dst]; !ok {
-			bind.dialers[se.dst] = true
+		if _, ok := bind.dialers[se.dst.String()]; !ok {
+			bind.dialers[se.dst.String()] = true
 			bind.wg.Add(1)
 			go bind.dial(se.dst)
 		}
@@ -309,7 +317,7 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 	bind.mu.RLock()
 	defer bind.mu.RUnlock()
 
-	conn, ok := bind.conns[se.dst]
+	conn, ok := bind.conns[se.dst.String()]
 	if !ok {
 		return false, nil
 	}
@@ -334,14 +342,11 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 
 func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
 	return func(b []byte) (int, conn.Endpoint, error) {
-		select {
-		case <-bind.ctx.Done():
-			return 0, nil, net.ErrClosed
-		case d := <-bind.received:
-			pktlen := len(d.b)
-			copy(b[:pktlen], d.b)
-			return pktlen, StreamEndpoint{src: d.src}, nil
-		}
+		d := <-bind.received
+		pktlen := len(d.b)
+		copy(b[:pktlen], d.b)
+		end := StreamEndpoint{dst: d.src}
+		return pktlen, &end, nil
 	}
 }
 
@@ -359,6 +364,7 @@ func (bind *SocketStreamBind) serve() {
 			}
 			return
 		}
+		bind.log.Verbosef("New connection from: %v", conn.RemoteAddr())
 		bind.handleConn(conn, make(chan interface{}))
 	}
 }
@@ -366,19 +372,19 @@ func (bind *SocketStreamBind) serve() {
 func (bind *SocketStreamBind) handleConn(conn net.Conn, reconnect chan<- interface{}) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
-	bind.conns[conn.RemoteAddr()] = conn
+	bind.conns[conn.RemoteAddr().String()] = conn
 	bind.wg.Add(1)
 	go bind.read(conn, reconnect)
 }
 
 func (bind *SocketStreamBind) read(conn net.Conn, reconnect chan<- interface{}) {
-	bind.log.Verbosef("Routine: server worker - started")
-	defer bind.log.Verbosef("Routine: server worker - stopped")
+	bind.log.Verbosef("Routine: reader worker - started")
+	defer bind.log.Verbosef("Routine: reader worker - stopped")
 
 	defer func() {
 		bind.mu.Lock()
 		defer bind.mu.Unlock()
-		delete(bind.conns, conn.RemoteAddr())
+		delete(bind.conns, conn.RemoteAddr().String())
 		conn.Close()
 		bind.wg.Done()
 	}()
@@ -453,10 +459,12 @@ func (bind *SocketStreamBind) dial(dst net.Addr) {
 		}()
 
 		if err != nil {
+			d := b.Duration()
+			bind.log.Verbosef("Failed dialing (%v), reconnecting in %s", err, d)
 			select {
 			case <-bind.ctx.Done():
 				return
-			case <-time.After(b.Duration()):
+			case <-time.After(d):
 				continue
 			}
 		}
