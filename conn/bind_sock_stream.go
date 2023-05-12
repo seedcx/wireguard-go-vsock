@@ -247,15 +247,16 @@ func (bind *SocketStreamBind) Close() error {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 	bind.cancel()
+	var err error
 	if bind.l != nil {
-		bind.l.Close()
+		err = bind.l.Close()
 		bind.l = nil
 	}
 	bind.wg.Wait()
 
 	ctx := context.Background()
 	bind.ctx, bind.cancel = context.WithCancel(ctx)
-	return nil
+	return err
 }
 
 func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
