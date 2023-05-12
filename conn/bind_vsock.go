@@ -392,7 +392,7 @@ func (bind *SocketStreamBind) serve() {
 		conn, err := bind.l.Accept()
 		if err != nil {
 			if _, ok := err.(*net.OpError); ok {
-				bind.log.Verbosef("Accept error: %w", err)
+				bind.log.Verbosef("Accept error: %v", err)
 			}
 			return
 		}
