@@ -23,6 +23,8 @@ The interface can be configured with keys and peer endpoints with the `wg(8)` ut
       allowed-ips 0.0.0.0/0 \
       endpoint 0.0.0.2:8172
 
+Notice that the above setting indicates that the peer endpoint is actually `host(2)` (context ID = 2). The `wg` command requires passing VSOCK CID as IPv4.
+
 Finally, the interface can then be activated with `ifconfig(8)` or `ip-link(8)`:
 
     ip link set up dev wg0
@@ -45,6 +47,8 @@ The interface can be configured with keys and peer endpoints with the `wg(8)` ut
       peer +SjU9sG4bBLyViwQsHxVXFxX/QD1npDI2NiHZyccv3w= \
       allowed-ips 0.0.0.0/0 \
       endpoint 0.0.0.6:51820
+
+Notice that the above setting indicates that the peer endpoint is actually `vm(6)` (context ID = 6). The `wg` command requires passing VSOCK CID as IPv4.
 
 Activate the interface with `ifconfig(8)` or `ip-link(8)`:
 
