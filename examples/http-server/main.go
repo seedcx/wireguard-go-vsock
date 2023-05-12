@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os/exec"
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -15,6 +16,7 @@ import (
 func main() {
 	network := "vsock"
 	interfaceName := "wg0"
+	localIP, remoteIP := "203.0.113.1", "203.0.113.2"
 	tun, err := tun.CreateTUN(interfaceName, device.DefaultMTU)
 	if err != nil {
 		log.Panic(err)
@@ -23,6 +25,7 @@ func main() {
 	if err == nil {
 		interfaceName = realInterfaceName
 	}
+	exec.Command("ip", "address", "add", "dev", interfaceName, localIP, "peer", remoteIP)
 	logger := device.NewLogger(
 		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
@@ -36,6 +39,8 @@ allowed_ip=0.0.0.0/0
 endpoint=vm(6):10001
 `)
 	dev.Up()
+	exec.Command("ip", "link", "set", "up", "dev", interfaceName)
+
 	http.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("> %s - %s - %s", request.RemoteAddr, request.URL.String(), request.UserAgent())
 		io.WriteString(writer, "Hello from userspace TCP!")

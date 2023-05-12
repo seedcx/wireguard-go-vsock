@@ -5,6 +5,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os/exec"
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -15,6 +16,7 @@ import (
 func main() {
 	network := "vsock"
 	interfaceName := "wg0"
+	localIP, remoteIP := "203.0.113.2", "203.0.113.1"
 	tun, err := tun.CreateTUN(interfaceName, device.DefaultMTU)
 	if err != nil {
 		log.Panic(err)
@@ -23,6 +25,7 @@ func main() {
 	if err == nil {
 		interfaceName = realInterfaceName
 	}
+	exec.Command("ip", "address", "add", "dev", interfaceName, localIP, "peer", remoteIP)
 	logger := device.NewLogger(
 		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
@@ -39,10 +42,11 @@ endpoint=host(2):10000
 	if err != nil {
 		log.Panic(err)
 	}
+	exec.Command("ip", "link", "set", "up", "dev", interfaceName)
 
 	client := http.Client{}
 	for {
-		resp, err := client.Get("http://203.0.113.1/")
+		resp, err := client.Get(fmt.Sprintf("http://%s/", remoteIP))
 		if err != nil {
 			log.Printf("HTTP Client error: %v", err)
 			continue
