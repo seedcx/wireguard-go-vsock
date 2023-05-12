@@ -193,7 +193,7 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tun, vsockconn.NewVsockSocketBind(), logger)
+	device := device.NewDevice(tun, vsockconn.NewVsockDgramBind(), logger)
 
 	logger.Verbosef("Device started")
 
