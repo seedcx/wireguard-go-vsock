@@ -3,12 +3,10 @@ package vsockconn
 import (
 	"context"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/netip"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -207,38 +205,19 @@ func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 			end.dst = net.TCPAddrFromAddrPort(e)
 			return &end, nil
 		} else {
-			for {
-				var err error
-				var contextID, port uint64
-				parts := strings.Split(s, ":")
-				if strings.HasPrefix(parts[0], "vm(") {
-					contextID, err = strconv.ParseUint(parts[0][3:len(parts[0])-1], 10, 32)
-				} else if strings.HasPrefix(parts[0], "host(") {
-					contextID, err = strconv.ParseUint(parts[0][5:len(parts[0])-1], 10, 32)
-				} else if strings.HasPrefix(parts[0], "local(") {
-					contextID, err = strconv.ParseUint(parts[0][6:len(parts[0])-1], 10, 32)
-				} else if strings.HasPrefix(parts[0], "hypervisor(") {
-					contextID, err = strconv.ParseUint(parts[0][11:len(parts[0])-1], 10, 32)
-				} else {
-					break
-				}
-				if err != nil {
-					break
-				}
-				port, err = strconv.ParseUint(parts[1], 10, 32)
-				if err != nil {
-					break
-				}
-				end.dst = &vsock.Addr{
-					ContextID: uint32(contextID),
-					Port:      uint32(port),
-				}
-				return &end, nil
+			contextID, port, err := ParseVsockAddress(s)
+			if err != nil {
+				return nil, ErrInvalid
 			}
+			end.dst = &vsock.Addr{
+				ContextID: uint32(contextID),
+				Port:      uint32(port),
+			}
+			return &end, nil
 		}
 	}
 
-	return nil, errors.New("invalid IP address")
+	return nil, ErrInvalid
 }
 
 func (bind *SocketStreamBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {

@@ -24,7 +24,15 @@ type VsockDgramBind struct {
 func NewVsockDgramBind() conn.Bind { return &VsockDgramBind{sock: -1} }
 
 func (*VsockDgramBind) ParseEndpoint(s string) (conn.Endpoint, error) {
-	return ParseEndpoint(s)
+	contextID, port, err := ParseVsockAddress(s)
+	if err != nil {
+		return nil, err
+	}
+	var end VsockEndpoint
+	dst := end.Dst()
+	dst.CID = contextID
+	dst.Port = port
+	return &end, nil
 }
 
 func (bind *VsockDgramBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
