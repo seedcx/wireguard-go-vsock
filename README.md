@@ -21,7 +21,7 @@ The interface can be configured with keys and peer endpoints with the `wg(8)` ut
       listen-port 51820 \
       peer xMjphMUyLIGExyJluSslD9tjaIcF9QS6ADyI8DOTzyg= \
       allowed-ips 0.0.0.0/0 \
-      endpoint host(2):8172
+      endpoint 0.0.0.2:8172
 
 Finally, the interface can then be activated with `ifconfig(8)` or `ip-link(8)`:
 
@@ -44,7 +44,7 @@ The interface can be configured with keys and peer endpoints with the `wg(8)` ut
       listen-port 8172 \
       peer +SjU9sG4bBLyViwQsHxVXFxX/QD1npDI2NiHZyccv3w= \
       allowed-ips 0.0.0.0/0 \
-      endpoint vm(6):51820
+      endpoint 0.0.0.6:51820
 
 Activate the interface with `ifconfig(8)` or `ip-link(8)`:
 
