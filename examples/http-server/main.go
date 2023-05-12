@@ -10,7 +10,7 @@ import (
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
 
-	vsockconn "github.com/balena/wireguard-go-vsock/conn"
+	"github.com/balena/wireguard-go-vsock/vsockconn"
 )
 
 func main() {

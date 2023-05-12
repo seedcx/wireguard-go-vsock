@@ -13,12 +13,13 @@ import (
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
 
-	vsockconn "github.com/balena/wireguard-go-vsock/conn"
+	"github.com/balena/wireguard-go-vsock/vsockconn"
 )
 
 const (
 	ExitSetupSuccess = 0
 	ExitSetupFailed  = 1
+	Version          = "0.1.0"
 )
 
 const (
@@ -33,7 +34,13 @@ func printUsage() {
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Printf("wireguard-go v%s\n\nUserspace WireGuard VSOCK daemon for %s-%s.\nInformation available at https://www.wireguard.com.\nCopyright (C) Jason A. Donenfeld <Jason@zx2c4.com>\nCopyright (C) Guilherme B. Versiani <guibv@yahoo.com>\n", Version, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf(`wireguard-go-vsock v%s
+
+Userspace WireGuard VSOCK daemon for %s-%s with support to TCP and VSOCK.
+Information available at https://www.wireguard.com.
+Copyright (C) Jason A. Donenfeld <Jason@zx2c4.com>
+Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
+`, Version, runtime.GOOS, runtime.GOARCH)
 		return
 	}
 

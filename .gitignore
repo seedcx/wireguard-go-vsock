@@ -1,0 +1,5 @@
+*.sw[op]
+/examples/http-client/http-client
+/examples/http-server/http-server
+/coverage.out
+/integration_coverage.out

@@ -1,3 +1,5 @@
+// Package vsockconn implements a WireGuard bind supporting TCP and VSOCK
+// transport protocols.
 package vsockconn
 
 import (
@@ -29,27 +31,32 @@ const (
 	defaultReconnectIntervalMax    = 30 * time.Second
 	defaultReconnectIntervalFactor = 2
 
-	AnyCID  = math.MaxUint32 // VMADDR_CID_ANY (-1U)
-	AnyPort = math.MaxUint32 // VMADDR_PORT_ANY (-1U)
+	// AnyCID can be used to check if the context ID of a VSOCK address is
+	// equivalent to VMADDR_CID_ANY.
+	AnyCID = math.MaxUint32
+
+	// AnyCID can be used to check if the port of a VSOCK address is equivalent
+	// to VMADDR_PORT_ANY.
+	AnyPort = math.MaxUint32
 )
 
 var (
-	_ conn.Bind     = (*SocketStreamBind)(nil)
-	_ conn.Endpoint = StreamEndpoint{}
+	_ conn.Bind     = (*vsockBind)(nil)
+	_ conn.Endpoint = vsockEndpoint{}
 
 	ErrInvalid = errors.New("invalid address")
 )
 
-type StreamEndpoint struct {
+type vsockEndpoint struct {
 	src net.Addr
 	dst net.Addr
 }
 
-func (e StreamEndpoint) ClearSrc() {
+func (e vsockEndpoint) ClearSrc() {
 	e.src = nil
 }
 
-func (e StreamEndpoint) DstIP() netip.Addr {
+func (e vsockEndpoint) DstIP() netip.Addr {
 	if e.dst != nil {
 		switch dst := e.dst.(type) {
 		case *net.TCPAddr:
@@ -66,7 +73,7 @@ func (e StreamEndpoint) DstIP() netip.Addr {
 	return netip.Addr{}
 }
 
-func (e StreamEndpoint) SrcIP() netip.Addr {
+func (e vsockEndpoint) SrcIP() netip.Addr {
 	if e.src != nil {
 		switch src := e.src.(type) {
 		case *net.TCPAddr:
@@ -83,7 +90,7 @@ func (e StreamEndpoint) SrcIP() netip.Addr {
 	return netip.Addr{}
 }
 
-func (e StreamEndpoint) DstToBytes() []byte {
+func (e vsockEndpoint) DstToBytes() []byte {
 	if e.dst != nil {
 		switch dst := e.dst.(type) {
 		case *net.TCPAddr:
@@ -100,20 +107,30 @@ func (e StreamEndpoint) DstToBytes() []byte {
 	return []byte{}
 }
 
-func (e StreamEndpoint) DstToString() string {
+func (e vsockEndpoint) DstToString() string {
 	if e.dst != nil {
 		return e.dst.String()
 	}
 	return ""
 }
 
-func (e StreamEndpoint) SrcToString() string {
+func (e vsockEndpoint) SrcToString() string {
 	if e.src != nil {
 		return e.src.String()
 	}
 	return ""
 }
 
+// ParseVsockAddress returns the context ID and port of a VSOCK string address
+// in the format
+//
+//	`\(hypervisor(0)|local(1)|host(\([2-9]|[1-9][0-9]+\))\):[0-9]*`
+//
+// Example:
+//
+//	vsockconn.ParseVsockAddress("host(2):12201")
+//
+// will return context ID 2 and port 12201.
 func ParseVsockAddress(s string) (uint32, uint32, error) {
 	var err error
 	var contextID, port uint64
@@ -148,43 +165,49 @@ func ParseVsockAddress(s string) (uint32, uint32, error) {
 	return uint32(contextID), uint32(port), nil
 }
 
-type Option func(bind *SocketStreamBind)
+type Option func(bind *vsockBind)
 
-func ReconnectIntervalMin(t time.Duration) Option {
-	return func(bind *SocketStreamBind) {
+// WithReconnectIntervalMin returns an Option that defines the minimum interval
+// to attempt reconnecting. Defaults to 500ms.
+func WithReconnectIntervalMin(t time.Duration) Option {
+	return func(bind *vsockBind) {
 		bind.b.Min = t
 	}
 }
 
-func ReconnectIntervalMax(t time.Duration) Option {
-	return func(bind *SocketStreamBind) {
+// WithReconnectIntervalMax returns an Option that defines the maximum interval
+// to attempt reconnecting. Defaults to 30s.
+func WithReconnectIntervalMax(t time.Duration) Option {
+	return func(bind *vsockBind) {
 		bind.b.Max = t
 	}
 }
 
-func ReconnectIntervalFactor(factor float64) Option {
-	return func(bind *SocketStreamBind) {
+// WithReconnectInterval returns an Option defining the multiplying factor for
+// each increment step while reconnecting. Defaults to 2.
+func WithReconnectIntervalFactor(factor float64) Option {
+	return func(bind *vsockBind) {
 		bind.b.Factor = factor
 	}
 }
 
-func ReconnectIntervalJitter(b bool) Option {
-	return func(bind *SocketStreamBind) {
+// WithReconnectInterval returns an Option defining the jitter used at
+// reconnecting. Jitter eases contention by randomizing backoff steps. Defaults
+// to true.
+func WithReconnectIntervalJitter(b bool) Option {
+	return func(bind *vsockBind) {
 		bind.b.Jitter = b
 	}
 }
 
-func Network(network string) Option {
-	return func(bind *SocketStreamBind) {
+// WithNetwork returns an Option to define thee network to be used while
+// creating listening sockets and connecting to peers. It can be 'vsock' or
+// 'tcp'. The 'tcp' option doesn't provide a much robust implementation of a
+// WireGuard transport; it should be used only for testing purposes on
+// architectures lacking VSOCK. Defaults to 'vsock'.
+func WithNetwork(network string) Option {
+	return func(bind *vsockBind) {
 		bind.network = network
-	}
-}
-
-type HandshakeFunc func(conn net.Conn) error
-
-func Handshake(handshake HandshakeFunc) Option {
-	return func(bind *SocketStreamBind) {
-		bind.handshake = handshake
 	}
 }
 
@@ -193,7 +216,7 @@ type streamDatagram struct {
 	src net.Addr
 }
 
-type SocketStreamBind struct {
+type vsockBind struct {
 	log *device.Logger
 
 	wg     sync.WaitGroup
@@ -211,30 +234,27 @@ type SocketStreamBind struct {
 	dialers map[string]interface{}
 
 	received chan streamDatagram
-
-	handshake HandshakeFunc
 }
 
 func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	bind := &SocketStreamBind{
+	bind := &vsockBind{
 		b: backoff.Backoff{
 			Min:    defaultReconnectIntervalMin,
 			Max:    defaultReconnectIntervalMax,
 			Factor: defaultReconnectIntervalFactor,
 			Jitter: true,
 		},
-		network:   "vsock",
-		log:       logger,
-		ctx:       ctx,
-		cancel:    cancel,
-		conns:     make(map[string]net.Conn),
-		dialers:   make(map[string]interface{}),
-		pending:   make(map[string]*list.List),
-		received:  make(chan streamDatagram),
-		handshake: func(_ net.Conn) error { return nil },
+		network:  "vsock",
+		log:      logger,
+		ctx:      ctx,
+		cancel:   cancel,
+		conns:    make(map[string]net.Conn),
+		dialers:  make(map[string]interface{}),
+		pending:  make(map[string]*list.List),
+		received: make(chan streamDatagram),
 	}
 
 	for _, opt := range opts {
@@ -244,9 +264,9 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 	return bind
 }
 
-func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
+func (*vsockBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	if len(s) > 0 {
-		var end StreamEndpoint
+		var end vsockEndpoint
 		if s[0] >= '0' && s[0] <= '9' {
 			e, err := netip.ParseAddrPort(s)
 			if err != nil {
@@ -270,7 +290,7 @@ func (*SocketStreamBind) ParseEndpoint(s string) (conn.Endpoint, error) {
 	return nil, ErrInvalid
 }
 
-func (bind *SocketStreamBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 
@@ -302,19 +322,24 @@ func (bind *SocketStreamBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, err
 	return []conn.ReceiveFunc{bind.makeReceiveFunc()}, port, nil
 }
 
-func (bind *SocketStreamBind) SetMark(value uint32) error {
+func (bind *vsockBind) SetMark(value uint32) error {
 	return nil
 }
 
-func (bind *SocketStreamBind) Close() error {
+func (bind *vsockBind) Close() error {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 	bind.cancel()
+
 	var err error
 	if bind.l != nil {
 		err = bind.l.Close()
 		bind.l = nil
 	}
+	for _, c := range bind.conns {
+		c.Close()
+	}
+
 	bind.wg.Wait()
 
 	ctx := context.Background()
@@ -322,8 +347,8 @@ func (bind *SocketStreamBind) Close() error {
 	return err
 }
 
-func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
-	se, ok := end.(*StreamEndpoint)
+func (bind *vsockBind) Send(buff []byte, end conn.Endpoint) error {
+	se, ok := end.(*vsockEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
@@ -358,7 +383,7 @@ func (bind *SocketStreamBind) Send(buff []byte, end conn.Endpoint) error {
 	return err
 }
 
-func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, error) {
+func (bind *vsockBind) lockedSend(b []byte, se *vsockEndpoint) (bool, error) {
 	bind.mu.RLock()
 	defer bind.mu.RUnlock()
 
@@ -375,7 +400,7 @@ func (bind *SocketStreamBind) lockedSend(b []byte, se *StreamEndpoint) (bool, er
 	return ok, nil
 }
 
-func (bind *SocketStreamBind) marshal(conn net.Conn, b []byte) error {
+func (bind *vsockBind) marshal(conn net.Conn, b []byte) error {
 	// Write the packet's size.
 	err := binary.Write(conn, binary.LittleEndian, uint16(len(b)))
 	if err != nil {
@@ -394,7 +419,7 @@ func (bind *SocketStreamBind) marshal(conn net.Conn, b []byte) error {
 	return nil
 }
 
-func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
+func (bind *vsockBind) makeReceiveFunc() conn.ReceiveFunc {
 	ctx := bind.ctx
 	return func(b []byte) (int, conn.Endpoint, error) {
 		select {
@@ -403,13 +428,13 @@ func (bind *SocketStreamBind) makeReceiveFunc() conn.ReceiveFunc {
 		case d := <-bind.received:
 			pktlen := len(d.b)
 			copy(b[:pktlen], d.b)
-			end := StreamEndpoint{dst: d.src}
+			end := vsockEndpoint{dst: d.src}
 			return pktlen, &end, nil
 		}
 	}
 }
 
-func (bind *SocketStreamBind) serve() {
+func (bind *vsockBind) serve() {
 	bind.log.Verbosef("Routine: listener worker - started")
 	defer bind.log.Verbosef("Routine: listener worker - stopped")
 
@@ -418,7 +443,7 @@ func (bind *SocketStreamBind) serve() {
 	for {
 		conn, err := bind.l.Accept()
 		if err != nil {
-			if _, ok := err.(*net.OpError); ok {
+			if _, ok := err.(*net.OpError); ok && !isClosedConnError(err) {
 				bind.log.Verbosef("Accept error: %v", err)
 			}
 			return
@@ -428,18 +453,10 @@ func (bind *SocketStreamBind) serve() {
 	}
 }
 
-func (bind *SocketStreamBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
-	if err := bind.handshake(conn); err != nil {
-		bind.log.Errorf("Handshake error %v", err)
-		conn.Close()
-		reconnect <- true
-		return
-	}
-
+func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 	bind.conns[conn.RemoteAddr().String()] = conn
-	bind.wg.Add(1)
 
 	// If there are pending frames, dispatch them all now
 
@@ -457,10 +474,11 @@ func (bind *SocketStreamBind) handleConn(conn net.Conn, dst net.Addr, reconnect 
 		}
 	}
 
+	bind.wg.Add(1)
 	go bind.read(bind.ctx, conn, reconnect)
 }
 
-func (bind *SocketStreamBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
+func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
 	bind.log.Verbosef("Routine: reader worker - started")
 	defer bind.log.Verbosef("Routine: reader worker - stopped")
 
@@ -469,8 +487,9 @@ func (bind *SocketStreamBind) read(ctx context.Context, conn net.Conn, reconnect
 		defer bind.mu.Unlock()
 		delete(bind.conns, conn.RemoteAddr().String())
 		conn.Close()
-		bind.wg.Done()
 	}()
+
+	defer bind.wg.Done()
 
 	for {
 		b := make([]byte, maxMTU+ethernetMinimumSize)
@@ -489,7 +508,7 @@ func (bind *SocketStreamBind) read(ctx context.Context, conn net.Conn, reconnect
 	}
 }
 
-func (bind *SocketStreamBind) readFrame(conn net.Conn, b []byte) (int, error) {
+func (bind *vsockBind) readFrame(conn net.Conn, b []byte) (int, error) {
 	// Read the incoming packet's size as a binary value.
 	n, err := io.ReadFull(conn, b[:2])
 	if err != nil {
@@ -518,7 +537,7 @@ func (bind *SocketStreamBind) readFrame(conn net.Conn, b []byte) (int, error) {
 	return n, nil
 }
 
-func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr) {
+func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr) {
 	bind.log.Verbosef("Routine: dialer worker - started")
 	defer bind.log.Verbosef("Routine: dialer worker - stopped")
 
@@ -542,7 +561,9 @@ func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst n
 
 		if err != nil {
 			d := b.Duration()
-			bind.log.Verbosef("Failed dialing (%v), reconnecting in %s", err, d)
+			if !isClosedConnError(err) {
+				bind.log.Verbosef("Failed dialing (%v), reconnecting in %s", err, d)
+			}
 			select {
 			case <-bind.ctx.Done():
 				return
@@ -560,4 +581,21 @@ func (bind *SocketStreamBind) dial(ctx context.Context, b backoff.Backoff, dst n
 			continue
 		}
 	}
+}
+
+// isClosedConnError reports whether err is an error from use of a closed
+// network connection.
+func isClosedConnError(err error) bool {
+	if err == nil {
+		return false
+	}
+
+	// Consider removing this string search when the standard library provides a
+	// better way to do so.
+	str := err.Error()
+	if strings.Contains(str, "use of closed network connection") {
+		return true
+	}
+
+	return false
 }

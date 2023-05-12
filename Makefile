@@ -3,18 +3,7 @@ DESTDIR ?=
 BINDIR ?= $(PREFIX)/bin
 export GO111MODULE := on
 
-all: generate-version-and-build
-
-MAKEFLAGS += --no-print-directory
-
-generate-version-and-build:
-	@export GIT_CEILING_DIRECTORIES="$(realpath $(CURDIR)/..)" && \
-	tag="$$(git describe 2>/dev/null)" && \
-	ver="$$(printf 'package main\n\nconst Version = "%s"\n' "$$tag")" && \
-	[ "$$(cat version.go 2>/dev/null)" != "$$ver" ] && \
-	echo "$$ver" > version.go && \
-	git update-index --assume-unchanged version.go || true
-	@$(MAKE) wireguard-go-vsock
+all: wireguard-go-vsock
 
 wireguard-go-vsock: $(wildcard *.go) $(wildcard */*.go)
 	go build -v -o "$@"
@@ -23,7 +12,13 @@ install: wireguard-go-vsock
 	@install -v -d "$(DESTDIR)$(BINDIR)" && install -v -m 0755 "$<" "$(DESTDIR)$(BINDIR)/wireguard-go-vsock"
 
 test:
-	go test ./...
+	go test -timeout 60s -coverprofile coverage.out ./...
+
+integration-test:
+	docker run -v ${PWD}:/work -w /work --privileged -ti --rm golang:1.20 \
+	 	bash -c 'apt-get update && \
+						 apt-get install -y --no-install-recommends net-tools iproute2 iputils-ping && \
+						 go test -tags integration -timeout 60s -coverprofile integration_coverage.out ./...'
 
 clean:
 	rm -f wireguard-go-vsock
