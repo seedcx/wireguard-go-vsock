@@ -8,7 +8,6 @@ import (
 	"os/exec"
 	"runtime"
 	"testing"
-	"time"
 
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun"
@@ -23,6 +22,7 @@ endpoint=127.0.0.1:%d
 
 type peer struct {
 	iface      string
+	bind       *vsockBind
 	dev        *device.Device
 	tun        tun.Device
 	ip         string
@@ -59,12 +59,12 @@ func createConnectedPeers(t *testing.T) (*peer, *peer) {
 		t.Fatal("Unsupported OS")
 	}
 
-	var err error
 	for i, p := range peers {
 		endpointPort, peerPk := peers[(i+1)%2].listenPort, peers[(i+1)%2].pk
 		p.cfg = fmt.Sprintf(configTemplate, p.pvk, p.listenPort, peerPk, endpointPort)
 	}
 
+	var err error
 	for i, p := range peers {
 		p.tun, err = tun.CreateTUN(p.iface, device.DefaultMTU)
 		if err != nil {
@@ -77,7 +77,7 @@ func createConnectedPeers(t *testing.T) (*peer, *peer) {
 		}
 
 		localIP, remoteIP := p.ip, peers[(i+1)%2].ip
-		cmd := exec.Command("ip", "address", "add", "dev", p.iface, localIP, "peer", remoteIP)
+		cmd := exec.Command("ip", "address", "add", "dev", p.iface, localIP, "peer", fmt.Sprintf("%s/30", remoteIP))
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("Error assigning ip %q to interface %q: %v", p.ip, p.iface, err)
 		}
@@ -87,8 +87,8 @@ func createConnectedPeers(t *testing.T) (*peer, *peer) {
 			fmt.Sprintf("(%s) ", p.iface),
 		)
 
-		bind := NewBind(p.logger, WithNetwork("tcp"))
-		p.dev = device.NewDevice(p.tun, bind, p.logger)
+		p.bind = NewBind(p.logger, WithNetwork("tcp")).(*vsockBind)
+		p.dev = device.NewDevice(p.tun, p.bind, p.logger)
 		p.dev.IpcSet(p.cfg)
 		p.dev.Up()
 
@@ -101,9 +101,19 @@ func createConnectedPeers(t *testing.T) (*peer, *peer) {
 	return peers[0], peers[1]
 }
 
-func shutdownPeer(p *peer) {
+func shutdownPeer(t *testing.T, p *peer) {
 	p.logger.Verbosef("Shutting down %q...", p.iface)
 	p.dev.Close()
+
+	if p.bind.l != nil {
+		t.Error("Close didn't close the listening socket")
+	}
+	if p.bind.l != nil {
+		t.Error("Close left pending packets in the queue")
+	}
+	if len(p.bind.conns) > 0 {
+		t.Error("Pending connections after closing")
+	}
 
 	p.logger.Verbosef("Closing TUN %q...", p.iface)
 	p.tun.Close()
@@ -113,20 +123,34 @@ func shutdownPeer(p *peer) {
 }
 
 func TestTearUpShutdown(t *testing.T) {
+	// Notice the below test does not work because there are two link layers
+	// being created. As packets are routed from different link layers, they
+	// don't reach each other, and thus ping times out.
+	//
+	// However, there are pings being executed from the two ends, so it serves to
+	// test the stack.
+
 	p1, p2 := createConnectedPeers(t)
+
+	p1.logger.Verbosef("Finished creating peers")
+
+	defer shutdownPeer(t, p1)
+	defer shutdownPeer(t, p2)
 
 	out, _ := exec.Command("netstat", "-tupan").Output()
 	p1.logger.Verbosef("netstat -tupan:\n%s", out)
 
+	out, _ = exec.Command("route", "-n").Output()
+	p1.logger.Verbosef("route -n:\n%s", out)
+
 	out, _ = exec.Command("ip", "a").Output()
 	p1.logger.Verbosef("ip a:\n%s", out)
 
-	exec.Command("ping", "-c", "1", "-I", p1.iface, p2.ip).Output()
-	time.Sleep(3 * time.Second)
+	p1.logger.Verbosef("ping -c 1 -W 1 -I %s %s", p1.iface, p2.ip)
+	out, _ = exec.Command("ping", "-c", "1", "-W", "1", "-I", p1.iface, p2.ip).Output()
+	p1.logger.Verbosef("\n%s", out)
 
-	exec.Command("ping", "-c", "3", "-I", p2.iface, p1.ip).Output()
-	time.Sleep(3 * time.Second)
-
-	defer shutdownPeer(p1)
-	defer shutdownPeer(p2)
+	p2.logger.Verbosef("ping -c 1 -W 1 -I %s %s", p2.iface, p1.ip)
+	out, _ = exec.Command("ping", "-c", "1", "-W", "1", "-I", p2.iface, p1.ip).Output()
+	p2.logger.Verbosef("\n%s", out)
 }

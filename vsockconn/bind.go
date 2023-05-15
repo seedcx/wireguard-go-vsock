@@ -24,8 +24,8 @@ import (
 )
 
 const (
-	maxMTU              = 1500
-	ethernetMinimumSize = 64
+	maxPacketSize     = 64 * 1024 // 64kb
+	maxEnqueuePackets = 10
 
 	defaultReconnectIntervalMin    = 500 * time.Millisecond
 	defaultReconnectIntervalMax    = 30 * time.Second
@@ -45,6 +45,14 @@ var (
 	_ conn.Endpoint = vsockEndpoint{}
 
 	ErrInvalid = errors.New("invalid address")
+
+	packetPool = sync.Pool{
+		New: func() any {
+			return make([]byte, maxPacketSize)
+		},
+	}
+
+	ErrPacketTooLong = errors.New("packet is too long (>64kb)")
 )
 
 type vsockEndpoint struct {
@@ -227,11 +235,11 @@ type vsockBind struct {
 	l net.Listener
 
 	conns   map[string]net.Conn
-	pending map[string]*list.List
 	network string
 
 	b       backoff.Backoff
 	dialers map[string]interface{}
+	pending map[string]*list.List
 
 	received chan streamDatagram
 }
@@ -298,6 +306,9 @@ func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 		return nil, 0, conn.ErrBindAlreadyOpen
 	}
 
+	// We don't listen if port is zero; it is an indication that the WireGuard
+	// instance isn't a server. Client connections will be opened on demand at
+	// the Send function.
 	if port != 0 {
 		l, err := func() (net.Listener, error) {
 			switch bind.network {
@@ -328,7 +339,7 @@ func (bind *vsockBind) SetMark(value uint32) error {
 
 func (bind *vsockBind) Close() error {
 	bind.mu.Lock()
-	defer bind.mu.Unlock()
+
 	bind.cancel()
 
 	var err error
@@ -340,6 +351,8 @@ func (bind *vsockBind) Close() error {
 		c.Close()
 	}
 
+	bind.mu.Unlock()
+
 	bind.wg.Wait()
 
 	ctx := context.Background()
@@ -348,6 +361,10 @@ func (bind *vsockBind) Close() error {
 }
 
 func (bind *vsockBind) Send(buff []byte, end conn.Endpoint) error {
+	if len(buff) > maxPacketSize {
+		return ErrPacketTooLong
+	}
+
 	se, ok := end.(*vsockEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
@@ -370,10 +387,11 @@ func (bind *vsockBind) Send(buff []byte, end conn.Endpoint) error {
 			l = list.New()
 			bind.pending[key] = l
 		}
-		b := make([]byte, len(buff))
+		b := packetPool.Get().([]byte)
 		copy(b, buff)
-		l.PushBack(b)
-		for l.Len() > 2 {
+		l.PushBack(b[:len(buff)])
+		for l.Len() > maxEnqueuePackets {
+			packetPool.Put(l.Front())
 			l.Remove(l.Front())
 		}
 
@@ -392,7 +410,7 @@ func (bind *vsockBind) lockedSend(b []byte, se *vsockEndpoint) (bool, error) {
 		return false, nil
 	}
 
-	err := bind.marshal(conn, b)
+	err := writePacketToConn(conn, b)
 	if err != nil {
 		return ok, err
 	}
@@ -400,7 +418,7 @@ func (bind *vsockBind) lockedSend(b []byte, se *vsockEndpoint) (bool, error) {
 	return ok, nil
 }
 
-func (bind *vsockBind) marshal(conn net.Conn, b []byte) error {
+func writePacketToConn(conn net.Conn, b []byte) error {
 	// Write the packet's size.
 	err := binary.Write(conn, binary.LittleEndian, uint16(len(b)))
 	if err != nil {
@@ -428,6 +446,7 @@ func (bind *vsockBind) makeReceiveFunc() conn.ReceiveFunc {
 		case d := <-bind.received:
 			pktlen := len(d.b)
 			copy(b[:pktlen], d.b)
+			packetPool.Put(d.b)
 			end := vsockEndpoint{dst: d.src}
 			return pktlen, &end, nil
 		}
@@ -435,8 +454,8 @@ func (bind *vsockBind) makeReceiveFunc() conn.ReceiveFunc {
 }
 
 func (bind *vsockBind) serve() {
-	bind.log.Verbosef("Routine: listener worker - started")
-	defer bind.log.Verbosef("Routine: listener worker - stopped")
+	bind.log.Verbosef("Routine: acceptor worker - started")
+	defer bind.log.Verbosef("Routine: acceptor worker - stopped")
 
 	defer bind.wg.Done()
 
@@ -448,8 +467,8 @@ func (bind *vsockBind) serve() {
 			}
 			return
 		}
-		bind.log.Verbosef("New connection from: %v", conn.RemoteAddr())
-		bind.handleConn(conn, nil, make(chan interface{}))
+		bind.log.Verbosef("Routine: acceptor worker - new connection from: %v", conn.RemoteAddr())
+		bind.handleConn(conn, nil, make(chan interface{}, 1))
 	}
 }
 
@@ -467,7 +486,15 @@ func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- 
 			for l.Len() > 0 {
 				ref := l.Front()
 				b, _ := ref.Value.([]byte)
-				bind.marshal(conn, b)
+
+				err := writePacketToConn(conn, b)
+				if err != nil {
+					bind.log.Errorf("Error sending enqueued packets: %v", err)
+					reconnect <- true
+					return
+				}
+
+				packetPool.Put(b)
 				l.Remove(ref)
 			}
 			delete(bind.pending, key)
@@ -492,9 +519,10 @@ func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 	defer bind.wg.Done()
 
 	for {
-		b := make([]byte, maxMTU+ethernetMinimumSize)
-		n, err := bind.readFrame(conn, b)
+		b := packetPool.Get().([]byte)
+		n, err := readPacketFromConn(conn, b)
 		if err != nil {
+			packetPool.Put(b)
 			select {
 			case <-ctx.Done():
 				return
@@ -508,33 +536,18 @@ func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 	}
 }
 
-func (bind *vsockBind) readFrame(conn net.Conn, b []byte) (int, error) {
+func readPacketFromConn(conn net.Conn, b []byte) (int, error) {
 	// Read the incoming packet's size as a binary value.
-	n, err := io.ReadFull(conn, b[:2])
+	_, err := io.ReadFull(conn, b[:2])
 	if err != nil {
 		return 0, err
-	}
-	if n != 2 {
-		return 0, io.EOF
 	}
 
 	// Decode the incoming packet's size from binary.
 	size := int(binary.LittleEndian.Uint16(b[:2]))
-	if size > len(b) {
-		bind.log.Errorf("Error: attempted to write frame > %d: %d", len(b), size)
-		conn.Close()
-		return 0, net.ErrClosed
-	}
 
-	n, err = io.ReadFull(conn, b[:size])
-	if err != nil {
-		return 0, err
-	}
-	if n != size {
-		return 0, io.EOF
-	}
-
-	return n, nil
+	// Read the packet, overriding the packet length.
+	return io.ReadFull(conn, b[:size])
 }
 
 func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr) {
@@ -543,7 +556,7 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 
 	defer bind.wg.Done()
 
-	reconnect := make(chan interface{})
+	reconnect := make(chan interface{}, 1)
 
 	for {
 		conn, err := func() (net.Conn, error) {
@@ -562,7 +575,7 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 		if err != nil {
 			d := b.Duration()
 			if !isClosedConnError(err) {
-				bind.log.Verbosef("Failed dialing (%v), reconnecting in %s", err, d)
+				bind.log.Verbosef("Routine: dialer worker - failed dialing (%v), reconnecting in %s", err, d)
 			}
 			select {
 			case <-bind.ctx.Done():
@@ -571,6 +584,8 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 				continue
 			}
 		}
+
+		bind.log.Verbosef("Routine: dialer worker - connected")
 
 		b.Reset()
 		bind.handleConn(conn, dst, reconnect)
