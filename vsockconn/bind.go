@@ -42,13 +42,14 @@ const (
 
 var (
 	_ conn.Bind     = (*vsockBind)(nil)
-	_ conn.Endpoint = vsockEndpoint{}
+	_ conn.Endpoint = (*vsockEndpoint)(nil)
 
 	ErrInvalid = errors.New("invalid address")
 
 	packetPool = sync.Pool{
 		New: func() any {
-			return make([]byte, maxPacketSize)
+			s := make([]byte, maxPacketSize)
+			return &s
 		},
 	}
 
@@ -60,7 +61,7 @@ type vsockEndpoint struct {
 	dst net.Addr
 }
 
-func (e vsockEndpoint) ClearSrc() {
+func (e *vsockEndpoint) ClearSrc() {
 	e.src = nil
 }
 
@@ -320,7 +321,6 @@ func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 				panic(net.UnknownNetworkError(bind.network))
 			}
 		}()
-
 		if err != nil {
 			return nil, 0, err
 		}
@@ -360,7 +360,21 @@ func (bind *vsockBind) Close() error {
 	return err
 }
 
-func (bind *vsockBind) Send(buff []byte, end conn.Endpoint) error {
+func (s *vsockBind) BatchSize() int {
+	return 1
+}
+
+func (bind *vsockBind) Send(bufs [][]byte, end conn.Endpoint) error {
+	for _, buff := range bufs {
+		err := bind.send(buff, end)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (bind *vsockBind) send(buff []byte, end conn.Endpoint) error {
 	if len(buff) > maxPacketSize {
 		return ErrPacketTooLong
 	}
@@ -387,11 +401,14 @@ func (bind *vsockBind) Send(buff []byte, end conn.Endpoint) error {
 			l = list.New()
 			bind.pending[key] = l
 		}
-		b := packetPool.Get().([]byte)
+		ptr := packetPool.Get().(*[]byte)
+		b := *ptr
+		b = b[:maxPacketSize]
 		copy(b, buff)
 		l.PushBack(b[:len(buff)])
 		for l.Len() > maxEnqueuePackets {
-			packetPool.Put(l.Front())
+			b = l.Front().Value.([]byte)
+			packetPool.Put(&b)
 			l.Remove(l.Front())
 		}
 
@@ -439,16 +456,16 @@ func writePacketToConn(conn net.Conn, b []byte) error {
 
 func (bind *vsockBind) makeReceiveFunc() conn.ReceiveFunc {
 	ctx := bind.ctx
-	return func(b []byte) (int, conn.Endpoint, error) {
+	return func(packets [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
 		select {
 		case <-ctx.Done():
-			return 0, nil, net.ErrClosed
+			return 0, net.ErrClosed
 		case d := <-bind.received:
-			pktlen := len(d.b)
-			copy(b[:pktlen], d.b)
-			packetPool.Put(d.b)
-			end := vsockEndpoint{dst: d.src}
-			return pktlen, &end, nil
+			sizes[0] = len(d.b)
+			copy(packets[0], d.b)
+			packetPool.Put(&d.b)
+			eps[0] = &vsockEndpoint{dst: d.src}
+			return 1, nil
 		}
 	}
 }
@@ -484,8 +501,7 @@ func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- 
 		l, ok := bind.pending[key]
 		if ok {
 			for l.Len() > 0 {
-				ref := l.Front()
-				b, _ := ref.Value.([]byte)
+				b := l.Front().Value.([]byte)
 
 				err := writePacketToConn(conn, b)
 				if err != nil {
@@ -494,8 +510,8 @@ func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- 
 					return
 				}
 
-				packetPool.Put(b)
-				l.Remove(ref)
+				packetPool.Put(&b)
+				l.Remove(l.Front())
 			}
 			delete(bind.pending, key)
 		}
@@ -519,10 +535,12 @@ func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 	defer bind.wg.Done()
 
 	for {
-		b := packetPool.Get().([]byte)
+		ptr := packetPool.Get().(*[]byte)
+		b := *ptr
+		b = b[:maxPacketSize]
 		n, err := readPacketFromConn(conn, b)
 		if err != nil {
-			packetPool.Put(b)
+			packetPool.Put(&b)
 			select {
 			case <-ctx.Done():
 				return
@@ -571,7 +589,6 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 				panic(net.UnknownNetworkError(dst.Network()))
 			}
 		}()
-
 		if err != nil {
 			d := b.Duration()
 			if !isClosedConnError(err) {
