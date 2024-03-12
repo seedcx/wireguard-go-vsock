@@ -1,4 +1,4 @@
-module github.com/balena/wireguard-go-vsock
+module github.com/seedcx/wireguard-go-vsock
 
 go 1.20
 
