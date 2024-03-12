@@ -103,14 +103,15 @@ There is no support yet.
 
 This requires an installation of [go](https://golang.org) ≥ 1.19.
 
-    $ git clone https://github.com/balena/wireguard-go-vsock
+    $ git clone https://github.com/seedcx/wireguard-go-vsock
     $ cd wireguard-go-vsock
     $ make
 
 ## License
 
     Copyright (C) 2017-2022 WireGuard LLC.
-    Copyright (C) 2023 Guilherme Versiani.
+    Copyright (C) 2023-2024 Guilherme Versiani.
+    Copyright (C) 2024 Zero Hash Holdings Ltd.
     
     Permission is hereby granted, free of charge, to any person obtaining a copy of
     this software and associated documentation files (the "Software"), to deal in

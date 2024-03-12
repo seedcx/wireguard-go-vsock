@@ -13,7 +13,7 @@ import (
 	"golang.zx2c4.com/wireguard/ipc"
 	"golang.zx2c4.com/wireguard/tun"
 
-	"github.com/balena/wireguard-go-vsock/vsockconn"
+	"github.com/seedcx/wireguard-go-vsock/vsockconn"
 )
 
 const (
