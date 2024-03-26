@@ -89,15 +89,23 @@ Note that this implementation accepts addresses in the following format when wir
 
 Note that due to underlying limitations at the base `wireguard-go`, the port should not be set as 32-bits, but 16-bits instead (as in Internet addresses).
 
+## TCP support
+
+In order to test out of AWS Nitro Enclaves, `wireguard-go-vsock` also supports the `tcp`, `tcp4` and `tcp6` network families (as int the `net` Go package). Just pass `-n/--network` parameter in the command line, like:
+
+    wireguard-go-vsock -n tcp wg0
+
+The above will initialize WireGuard under the network type `tcp`.
+
 ## Platforms
 
 ### Linux
 
-This will run on Linux with support to `AF_VSOCK` only.
+In order to support VSOCK, this will run on Linux with support to `AF_VSOCK` only. It is possible to use `AF_STREAM` by using the `-n/--network` flag, for experimental purposes.
 
 ### Other OSes
 
-There is no support yet.
+There is no support to VSOCK yet. It is possible to use `AF_STREAM` by using the `-n/--network` flag, for experimental purposes as in Linux.
 
 ## Building
 
@@ -109,9 +117,9 @@ This requires an installation of [go](https://golang.org) ≥ 1.19.
 
 ## License
 
-    Copyright (C) 2017-2022 WireGuard LLC.
-    Copyright (C) 2023-2024 Guilherme Versiani.
-    Copyright (C) 2024 Zero Hash Holdings Ltd.
+    Copyright (C) 2017-2023 WireGuard LLC. All Rights Reserved.
+    Copyright (C) 2023-2024 Guilherme Versiani. All Rights Reserved.
+    Copyright (C) 2024 Zero Hash Holdings Ltd. All Rights Reserved.
     
     Permission is hereby granted, free of charge, to any person obtaining a copy of
     this software and associated documentation files (the "Software"), to deal in

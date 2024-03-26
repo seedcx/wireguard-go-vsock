@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -29,7 +30,7 @@ const (
 )
 
 func printUsage() {
-	fmt.Printf("Usage: %s [-f/--foreground] INTERFACE-NAME\n", os.Args[0])
+	fmt.Printf("Usage: %s [-f/--foreground] [-n/--network <vsock|tcp|tcp4|tcp6>] INTERFACE-NAME\n", os.Args[0])
 }
 
 func main() {
@@ -45,6 +46,7 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 	}
 
 	var foreground bool
+	var network string
 	var interfaceName string
 	if len(os.Args) < 2 || len(os.Args) > 3 {
 		printUsage()
@@ -62,6 +64,13 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 
 		case "-f", "--foreground":
 			foreground = true
+		case "-n", "--network":
+			network = os.Args[i+1]
+			if !slices.Contains([]string{"vsock", "tcp", "tcp4", "tcp6"}, network) {
+				printUsage()
+				return
+			}
+			i++
 		default:
 			printUsage()
 			return
@@ -71,6 +80,10 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 	if i != len(os.Args)-1 {
 		printUsage()
 		return
+	}
+
+	if network == "" {
+		network = "vsock"
 	}
 
 	interfaceName = os.Args[len(os.Args)-1]
@@ -206,7 +219,7 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 		return
 	}
 
-	bind := vsockconn.NewBind(logger)
+	bind := vsockconn.NewBind(logger, vsockconn.WithNetwork(network))
 	device := device.NewDevice(tun, bind, logger)
 
 	logger.Verbosef("Device started")
