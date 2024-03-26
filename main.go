@@ -48,10 +48,6 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 	var foreground bool
 	var network string
 	var interfaceName string
-	if len(os.Args) < 2 || len(os.Args) > 3 {
-		printUsage()
-		return
-	}
 
 	i := 1
 	for ; i < len(os.Args); i++ {
@@ -61,7 +57,6 @@ Copyright (C) Guilherme B. Versiani <guibv@yahoo.com>
 		}
 
 		switch flag {
-
 		case "-f", "--foreground":
 			foreground = true
 		case "-n", "--network":
