@@ -41,8 +41,8 @@ const (
 )
 
 var (
-	_ conn.Bind     = (*vsockBind)(nil)
-	_ conn.Endpoint = (*vsockEndpoint)(nil)
+	_ conn.Bind     = (*VSOCKBind)(nil)
+	_ conn.Endpoint = (*VSOCKEndpoint)(nil)
 
 	ErrInvalid = errors.New("invalid address")
 
@@ -56,16 +56,16 @@ var (
 	ErrPacketTooLong = errors.New("packet is too long (>64kb)")
 )
 
-type vsockEndpoint struct {
+type VSOCKEndpoint struct {
 	src net.Addr
 	dst net.Addr
 }
 
-func (e *vsockEndpoint) ClearSrc() {
+func (e *VSOCKEndpoint) ClearSrc() {
 	e.src = nil
 }
 
-func (e vsockEndpoint) DstIP() netip.Addr {
+func (e VSOCKEndpoint) DstIP() netip.Addr {
 	if e.dst != nil {
 		switch dst := e.dst.(type) {
 		case *net.TCPAddr:
@@ -82,7 +82,7 @@ func (e vsockEndpoint) DstIP() netip.Addr {
 	return netip.Addr{}
 }
 
-func (e vsockEndpoint) SrcIP() netip.Addr {
+func (e VSOCKEndpoint) SrcIP() netip.Addr {
 	if e.src != nil {
 		switch src := e.src.(type) {
 		case *net.TCPAddr:
@@ -99,7 +99,7 @@ func (e vsockEndpoint) SrcIP() netip.Addr {
 	return netip.Addr{}
 }
 
-func (e vsockEndpoint) DstToBytes() []byte {
+func (e VSOCKEndpoint) DstToBytes() []byte {
 	if e.dst != nil {
 		switch dst := e.dst.(type) {
 		case *net.TCPAddr:
@@ -116,14 +116,14 @@ func (e vsockEndpoint) DstToBytes() []byte {
 	return []byte{}
 }
 
-func (e vsockEndpoint) DstToString() string {
+func (e VSOCKEndpoint) DstToString() string {
 	if e.dst != nil {
 		return e.dst.String()
 	}
 	return ""
 }
 
-func (e vsockEndpoint) SrcToString() string {
+func (e VSOCKEndpoint) SrcToString() string {
 	if e.src != nil {
 		return e.src.String()
 	}
@@ -159,6 +159,14 @@ func ParseVsockAddress(s string) (uint32, uint32, error) {
 		} else if contextID < 3 {
 			return 0, 0, ErrInvalid
 		}
+	} else if parts[0][0] >= '0' && parts[0][0] <= '9' {
+		ip, err := netip.ParseAddr(parts[0])
+		if err != nil {
+			return 0, 0, err
+		}
+		for _, b := range ip.AsSlice() {
+			contextID = (contextID << 8) + uint64(b)
+		}
 	} else {
 		return 0, 0, ErrInvalid
 	}
@@ -174,12 +182,12 @@ func ParseVsockAddress(s string) (uint32, uint32, error) {
 	return uint32(contextID), uint32(port), nil
 }
 
-type Option func(bind *vsockBind)
+type Option func(bind *VSOCKBind)
 
 // WithReconnectIntervalMin returns an Option that defines the minimum interval
 // to attempt reconnecting. Defaults to 500ms.
 func WithReconnectIntervalMin(t time.Duration) Option {
-	return func(bind *vsockBind) {
+	return func(bind *VSOCKBind) {
 		bind.b.Min = t
 	}
 }
@@ -187,7 +195,7 @@ func WithReconnectIntervalMin(t time.Duration) Option {
 // WithReconnectIntervalMax returns an Option that defines the maximum interval
 // to attempt reconnecting. Defaults to 30s.
 func WithReconnectIntervalMax(t time.Duration) Option {
-	return func(bind *vsockBind) {
+	return func(bind *VSOCKBind) {
 		bind.b.Max = t
 	}
 }
@@ -195,7 +203,7 @@ func WithReconnectIntervalMax(t time.Duration) Option {
 // WithReconnectInterval returns an Option defining the multiplying factor for
 // each increment step while reconnecting. Defaults to 2.
 func WithReconnectIntervalFactor(factor float64) Option {
-	return func(bind *vsockBind) {
+	return func(bind *VSOCKBind) {
 		bind.b.Factor = factor
 	}
 }
@@ -204,7 +212,7 @@ func WithReconnectIntervalFactor(factor float64) Option {
 // reconnecting. Jitter eases contention by randomizing backoff steps. Defaults
 // to true.
 func WithReconnectIntervalJitter(b bool) Option {
-	return func(bind *vsockBind) {
+	return func(bind *VSOCKBind) {
 		bind.b.Jitter = b
 	}
 }
@@ -215,7 +223,7 @@ func WithReconnectIntervalJitter(b bool) Option {
 // WireGuard transport; it should be used only for testing purposes on
 // architectures lacking VSOCK. Defaults to 'vsock'.
 func WithNetwork(network string) Option {
-	return func(bind *vsockBind) {
+	return func(bind *VSOCKBind) {
 		bind.network = network
 	}
 }
@@ -225,7 +233,7 @@ type streamDatagram struct {
 	src net.Addr
 }
 
-type vsockBind struct {
+type VSOCKBind struct {
 	log *device.Logger
 
 	wg     sync.WaitGroup
@@ -249,7 +257,7 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 	ctx := context.Background()
 	ctx, cancel := context.WithCancel(ctx)
 
-	bind := &vsockBind{
+	bind := &VSOCKBind{
 		b: backoff.Backoff{
 			Min:    defaultReconnectIntervalMin,
 			Max:    defaultReconnectIntervalMax,
@@ -273,33 +281,35 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 	return bind
 }
 
-func (*vsockBind) ParseEndpoint(s string) (conn.Endpoint, error) {
-	if len(s) > 0 {
-		var end vsockEndpoint
-		if s[0] >= '0' && s[0] <= '9' {
-			e, err := netip.ParseAddrPort(s)
-			if err != nil {
-				return nil, err
-			}
-			end.dst = net.TCPAddrFromAddrPort(e)
-			return &end, nil
-		} else {
-			contextID, port, err := ParseVsockAddress(s)
-			if err != nil {
-				return nil, ErrInvalid
-			}
-			end.dst = &vsock.Addr{
-				ContextID: uint32(contextID),
-				Port:      uint32(port),
-			}
-			return &end, nil
-		}
+func (bind *VSOCKBind) ParseEndpoint(s string) (conn.Endpoint, error) {
+	if len(s) == 0 {
+		return nil, ErrInvalid
 	}
 
-	return nil, ErrInvalid
+	var end VSOCKEndpoint
+	switch bind.network {
+	case "vsock":
+		contextID, port, err := ParseVsockAddress(s)
+		if err != nil {
+			return nil, ErrInvalid
+		}
+		end.dst = &vsock.Addr{
+			ContextID: uint32(contextID),
+			Port:      uint32(port),
+		}
+	case "tcp", "tcp4", "tcp6":
+		e, err := netip.ParseAddrPort(s)
+		if err != nil {
+			return nil, err
+		}
+		end.dst = net.TCPAddrFromAddrPort(e)
+	default:
+		return nil, net.UnknownNetworkError(bind.network)
+	}
+	return &end, nil
 }
 
-func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
+func (bind *VSOCKBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 
@@ -313,12 +323,12 @@ func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	if port != 0 {
 		l, err := func() (net.Listener, error) {
 			switch bind.network {
-			case "tcp":
-				return net.Listen("tcp", fmt.Sprintf(":%d", port))
+			case "tcp", "tcp4", "tcp6":
+				return net.Listen(bind.network, fmt.Sprintf(":%d", port))
 			case "vsock":
 				return vsock.ListenContextID(AnyCID, uint32(port), nil)
 			default:
-				panic(net.UnknownNetworkError(bind.network))
+				return nil, net.UnknownNetworkError(bind.network)
 			}
 		}()
 		if err != nil {
@@ -333,11 +343,11 @@ func (bind *vsockBind) Open(port uint16) ([]conn.ReceiveFunc, uint16, error) {
 	return []conn.ReceiveFunc{bind.makeReceiveFunc()}, port, nil
 }
 
-func (bind *vsockBind) SetMark(value uint32) error {
+func (bind *VSOCKBind) SetMark(value uint32) error {
 	return nil
 }
 
-func (bind *vsockBind) Close() error {
+func (bind *VSOCKBind) Close() error {
 	bind.mu.Lock()
 
 	bind.cancel()
@@ -360,11 +370,11 @@ func (bind *vsockBind) Close() error {
 	return err
 }
 
-func (s *vsockBind) BatchSize() int {
+func (s *VSOCKBind) BatchSize() int {
 	return 1
 }
 
-func (bind *vsockBind) Send(bufs [][]byte, end conn.Endpoint) error {
+func (bind *VSOCKBind) Send(bufs [][]byte, end conn.Endpoint) error {
 	for _, buff := range bufs {
 		err := bind.send(buff, end)
 		if err != nil {
@@ -374,12 +384,12 @@ func (bind *vsockBind) Send(bufs [][]byte, end conn.Endpoint) error {
 	return nil
 }
 
-func (bind *vsockBind) send(buff []byte, end conn.Endpoint) error {
+func (bind *VSOCKBind) send(buff []byte, end conn.Endpoint) error {
 	if len(buff) > maxPacketSize {
 		return ErrPacketTooLong
 	}
 
-	se, ok := end.(*vsockEndpoint)
+	se, ok := end.(*VSOCKEndpoint)
 	if !ok {
 		return conn.ErrWrongEndpointType
 	}
@@ -393,7 +403,7 @@ func (bind *vsockBind) send(buff []byte, end conn.Endpoint) error {
 		if _, ok := bind.dialers[key]; !ok {
 			bind.dialers[key] = true
 			bind.wg.Add(1)
-			go bind.dial(bind.ctx, bind.b, se.dst)
+			go bind.dial(se.dst)
 		}
 
 		l, ok := bind.pending[key]
@@ -418,7 +428,7 @@ func (bind *vsockBind) send(buff []byte, end conn.Endpoint) error {
 	return err
 }
 
-func (bind *vsockBind) lockedSend(b []byte, se *vsockEndpoint) (bool, error) {
+func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 	bind.mu.RLock()
 	defer bind.mu.RUnlock()
 
@@ -454,42 +464,52 @@ func writePacketToConn(conn net.Conn, b []byte) error {
 	return nil
 }
 
-func (bind *vsockBind) makeReceiveFunc() conn.ReceiveFunc {
+func (bind *VSOCKBind) makeReceiveFunc() conn.ReceiveFunc {
 	ctx := bind.ctx
+	received := bind.received
 	return func(packets [][]byte, sizes []int, eps []conn.Endpoint) (n int, err error) {
 		select {
 		case <-ctx.Done():
 			return 0, net.ErrClosed
-		case d := <-bind.received:
+		case d := <-received:
 			sizes[0] = len(d.b)
 			copy(packets[0], d.b)
 			packetPool.Put(&d.b)
-			eps[0] = &vsockEndpoint{dst: d.src}
+			eps[0] = &VSOCKEndpoint{dst: d.src}
 			return 1, nil
 		}
 	}
 }
 
-func (bind *vsockBind) serve() {
+func (bind *VSOCKBind) serve() {
 	bind.log.Verbosef("Routine: acceptor worker - started")
 	defer bind.log.Verbosef("Routine: acceptor worker - stopped")
 
 	defer bind.wg.Done()
 
 	for {
-		conn, err := bind.l.Accept()
+		bind.mu.Lock()
+		l := bind.l
+		bind.mu.Unlock()
+
+		if l == nil {
+			return
+		}
+
+		conn, err := l.Accept()
 		if err != nil {
 			if _, ok := err.(*net.OpError); ok && !isClosedConnError(err) {
 				bind.log.Verbosef("Accept error: %v", err)
 			}
 			return
 		}
+
 		bind.log.Verbosef("Routine: acceptor worker - new connection from: %v", conn.RemoteAddr())
 		bind.handleConn(conn, nil, make(chan interface{}, 1))
 	}
 }
 
-func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
+func (bind *VSOCKBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
 	bind.conns[conn.RemoteAddr().String()] = conn
@@ -521,18 +541,18 @@ func (bind *vsockBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- 
 	go bind.read(bind.ctx, conn, reconnect)
 }
 
-func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
+func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
 	bind.log.Verbosef("Routine: reader worker - started")
 	defer bind.log.Verbosef("Routine: reader worker - stopped")
 
 	defer func() {
+		bind.wg.Done()
+
 		bind.mu.Lock()
 		defer bind.mu.Unlock()
 		delete(bind.conns, conn.RemoteAddr().String())
 		conn.Close()
 	}()
-
-	defer bind.wg.Done()
 
 	for {
 		ptr := packetPool.Get().(*[]byte)
@@ -550,7 +570,11 @@ func (bind *vsockBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 			}
 		}
 
-		bind.received <- streamDatagram{b[:n], conn.RemoteAddr()}
+		select {
+		case <-ctx.Done():
+			return
+		case bind.received <- streamDatagram{b[:n], conn.RemoteAddr()}:
+		}
 	}
 }
 
@@ -568,7 +592,7 @@ func readPacketFromConn(conn net.Conn, b []byte) (int, error) {
 	return io.ReadFull(conn, b[:size])
 }
 
-func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr) {
+func (bind *VSOCKBind) dial(dst net.Addr) {
 	bind.log.Verbosef("Routine: dialer worker - started")
 	defer bind.log.Verbosef("Routine: dialer worker - stopped")
 
@@ -576,12 +600,14 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 
 	reconnect := make(chan interface{}, 1)
 
+	b := bind.b
+	t := time.NewTimer(0)
 	for {
 		conn, err := func() (net.Conn, error) {
 			switch dst.Network() {
-			case "tcp":
+			case "tcp", "tcp4", "tcp6":
 				var d net.Dialer
-				return d.DialContext(bind.ctx, "tcp", dst.String())
+				return d.DialContext(bind.ctx, bind.network, dst.String())
 			case "vsock":
 				vsockAddr, _ := dst.(*vsock.Addr)
 				return vsock.Dial(vsockAddr.ContextID, vsockAddr.Port, nil)
@@ -594,10 +620,11 @@ func (bind *vsockBind) dial(ctx context.Context, b backoff.Backoff, dst net.Addr
 			if !isClosedConnError(err) {
 				bind.log.Verbosef("Routine: dialer worker - failed dialing (%v), reconnecting in %s", err, d)
 			}
+			t.Reset(d)
 			select {
 			case <-bind.ctx.Done():
 				return
-			case <-time.After(d):
+			case <-t.C:
 				continue
 			}
 		}
@@ -624,10 +651,5 @@ func isClosedConnError(err error) bool {
 
 	// Consider removing this string search when the standard library provides a
 	// better way to do so.
-	str := err.Error()
-	if strings.Contains(str, "use of closed network connection") {
-		return true
-	}
-
-	return false
+	return strings.Contains(err.Error(), "use of closed network connection")
 }

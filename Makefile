@@ -15,10 +15,10 @@ test:
 	go test -timeout 60s -coverprofile coverage.out ./...
 
 integration-test:
-	docker run -v ${PWD}:/work -w /work --privileged -ti --rm golang:1.20 \
+	docker run -v ${PWD}:/work -w /work --privileged -ti --rm golang:1.22 \
 	 	bash -c 'apt-get update && \
 						 apt-get install -y --no-install-recommends net-tools iproute2 iputils-ping && \
-						 go test -tags integration -timeout 60s -coverprofile integration_coverage.out ./...'
+						 go test -v -tags integration -timeout 60s -coverprofile integration_coverage.out ./...'
 
 clean:
 	rm -f wireguard-go-vsock
