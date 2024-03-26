@@ -22,7 +22,7 @@ endpoint=127.0.0.1:%d
 
 type peer struct {
 	iface      string
-	bind       *vsockBind
+	bind       *VSOCKBind
 	dev        *device.Device
 	tun        tun.Device
 	ip         string
@@ -87,7 +87,7 @@ func createConnectedPeers(t *testing.T) (*peer, *peer) {
 			fmt.Sprintf("(%s) ", p.iface),
 		)
 
-		p.bind = NewBind(p.logger, WithNetwork("tcp")).(*vsockBind)
+		p.bind = NewBind(p.logger, WithNetwork("tcp")).(*VSOCKBind)
 		p.dev = device.NewDevice(p.tun, p.bind, p.logger)
 		p.dev.IpcSet(p.cfg)
 		p.dev.Up()
@@ -146,11 +146,11 @@ func TestTearUpShutdown(t *testing.T) {
 	out, _ = exec.Command("ip", "a").Output()
 	p1.logger.Verbosef("ip a:\n%s", out)
 
-	p1.logger.Verbosef("ping -c 1 -W 1 -I %s %s", p1.iface, p2.ip)
-	out, _ = exec.Command("ping", "-c", "1", "-W", "1", "-I", p1.iface, p2.ip).Output()
+	p1.logger.Verbosef("ping -n 10 -c 1 -W 1 -I %s %s", p1.iface, p2.ip)
+	out, _ = exec.Command("ping", "-n", "10", "-c", "1", "-W", "1", "-I", p1.iface, p2.ip).Output()
 	p1.logger.Verbosef("\n%s", out)
 
-	p2.logger.Verbosef("ping -c 1 -W 1 -I %s %s", p2.iface, p1.ip)
-	out, _ = exec.Command("ping", "-c", "1", "-W", "1", "-I", p2.iface, p1.ip).Output()
+	p2.logger.Verbosef("ping -n 10 -c 1 -W 1 -I %s %s", p2.iface, p1.ip)
+	out, _ = exec.Command("ping", "-n", "10", "-c", "1", "-W", "1", "-I", p2.iface, p1.ip).Output()
 	p2.logger.Verbosef("\n%s", out)
 }

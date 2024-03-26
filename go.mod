@@ -1,6 +1,8 @@
 module github.com/seedcx/wireguard-go-vsock
 
-go 1.20
+go 1.21
+
+toolchain go1.22.1
 
 require (
 	github.com/jpillora/backoff v1.0.0

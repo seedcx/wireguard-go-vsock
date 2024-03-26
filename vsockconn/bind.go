@@ -546,13 +546,13 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 	defer bind.log.Verbosef("Routine: reader worker - stopped")
 
 	defer func() {
+		bind.wg.Done()
+
 		bind.mu.Lock()
 		defer bind.mu.Unlock()
 		delete(bind.conns, conn.RemoteAddr().String())
 		conn.Close()
 	}()
-
-	defer bind.wg.Done()
 
 	for {
 		ptr := packetPool.Get().(*[]byte)
@@ -570,7 +570,11 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 			}
 		}
 
-		bind.received <- streamDatagram{b[:n], conn.RemoteAddr()}
+		select {
+		case <-ctx.Done():
+			return
+		case bind.received <- streamDatagram{b[:n], conn.RemoteAddr()}:
+		}
 	}
 }
 
