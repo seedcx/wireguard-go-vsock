@@ -18,6 +18,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/gopacket"
+	"github.com/google/gopacket/layers"
 	"golang.org/x/crypto/curve25519"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
@@ -394,6 +396,43 @@ func BenchmarkThroughput(b *testing.B) {
 	b.ReportMetric(1-float64(b.N)/float64(sent), "packet-loss")
 }
 
+func FuzzUDPSend(f *testing.F) {
+	pair := genTestPair(f, "tcp")
+	pair.Send(f, Ping, nil)
+	pair.Send(f, Pong, nil)
+
+	f.Add(1, []byte{1})
+	f.Fuzz(func(t *testing.T, i int, msg []byte) {
+		i &= 1
+		packet, err := buildUDPPacket(pair[i^1].ip, pair[i].ip, 1339, 1338, msg)
+		if err != nil {
+			t.Fatalf("Error building UDP packet: %v", err)
+		}
+		if len(msg) == 0 {
+			return
+		}
+		pair[i].tun.Outbound <- packet
+		timer := time.NewTimer(500 * time.Millisecond)
+		defer timer.Stop()
+		err = nil
+		select {
+		case msgRecv := <-pair[i^1].tun.Inbound:
+			if !bytes.Equal(packet, msgRecv) {
+				err = fmt.Errorf("%s did not transit correctly", hex.EncodeToString(msg))
+			}
+		case <-timer.C:
+			err = fmt.Errorf("%s did not transit", hex.EncodeToString(msg))
+		}
+		if err != nil {
+			t.Error(err)
+		}
+	})
+
+	for i := range pair {
+		pair[i].dev.Close()
+	}
+}
+
 func goroutineLeakCheck(t *testing.T) {
 	goroutines := func() (int, []byte) {
 		p := pprof.Lookup("goroutine")
@@ -419,4 +458,26 @@ func goroutineLeakCheck(t *testing.T) {
 		t.Logf("ending stacks:\n%s\n", endStacks)
 		t.Fatalf("expected %d goroutines, got %d, leak?", startGoroutines, endGoroutines)
 	})
+}
+
+func buildUDPPacket(dst, src netip.Addr, dstPort, srcPort int, payload []byte) ([]byte, error) {
+	buffer := gopacket.NewSerializeBuffer()
+	ip := &layers.IPv4{
+		DstIP:    dst.AsSlice(),
+		SrcIP:    src.AsSlice(),
+		Version:  4,
+		TTL:      64,
+		Protocol: layers.IPProtocolUDP,
+	}
+	udp := &layers.UDP{
+		SrcPort: layers.UDPPort(srcPort),
+		DstPort: layers.UDPPort(dstPort),
+	}
+	if err := udp.SetNetworkLayerForChecksum(ip); err != nil {
+		return nil, fmt.Errorf("Failed calc checksum: %s", err)
+	}
+	if err := gopacket.SerializeLayers(buffer, gopacket.SerializeOptions{ComputeChecksums: true, FixLengths: true}, ip, udp, gopacket.Payload(payload)); err != nil {
+		return nil, fmt.Errorf("Failed serialize packet: %s", err)
+	}
+	return buffer.Bytes(), nil
 }
