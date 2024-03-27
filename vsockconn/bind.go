@@ -44,15 +44,7 @@ var (
 	_ conn.Bind     = (*VSOCKBind)(nil)
 	_ conn.Endpoint = (*VSOCKEndpoint)(nil)
 
-	ErrInvalid = errors.New("invalid address")
-
-	packetPool = sync.Pool{
-		New: func() any {
-			s := make([]byte, maxPacketSize)
-			return &s
-		},
-	}
-
+	ErrInvalid       = errors.New("invalid address")
 	ErrPacketTooLong = errors.New("packet is too long (>64kb)")
 )
 
@@ -251,6 +243,8 @@ type VSOCKBind struct {
 	pending map[string]*list.List
 
 	received chan streamDatagram
+
+	packetPool sync.Pool
 }
 
 func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
@@ -272,6 +266,12 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 		dialers:  make(map[string]interface{}),
 		pending:  make(map[string]*list.List),
 		received: make(chan streamDatagram),
+		packetPool: sync.Pool{
+			New: func() any {
+				s := make([]byte, maxPacketSize)
+				return &s
+			},
+		},
 	}
 
 	for _, opt := range opts {
@@ -411,14 +411,14 @@ func (bind *VSOCKBind) send(buff []byte, end conn.Endpoint) error {
 			l = list.New()
 			bind.pending[key] = l
 		}
-		ptr := packetPool.Get().(*[]byte)
+		ptr := bind.packetPool.Get().(*[]byte)
 		b := *ptr
 		b = b[:maxPacketSize]
 		copy(b, buff)
 		l.PushBack(b[:len(buff)])
 		for l.Len() > maxEnqueuePackets {
 			b = l.Front().Value.([]byte)
-			packetPool.Put(&b)
+			bind.packetPool.Put(&b)
 			l.Remove(l.Front())
 		}
 
@@ -474,7 +474,7 @@ func (bind *VSOCKBind) makeReceiveFunc() conn.ReceiveFunc {
 		case d := <-received:
 			sizes[0] = len(d.b)
 			copy(packets[0], d.b)
-			packetPool.Put(&d.b)
+			bind.packetPool.Put(&d.b)
 			eps[0] = &VSOCKEndpoint{dst: d.src}
 			return 1, nil
 		}
@@ -530,7 +530,7 @@ func (bind *VSOCKBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- 
 					return
 				}
 
-				packetPool.Put(&b)
+				bind.packetPool.Put(&b)
 				l.Remove(l.Front())
 			}
 			delete(bind.pending, key)
@@ -555,12 +555,12 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 	}()
 
 	for {
-		ptr := packetPool.Get().(*[]byte)
+		ptr := bind.packetPool.Get().(*[]byte)
 		b := *ptr
 		b = b[:maxPacketSize]
 		n, err := readPacketFromConn(conn, b)
 		if err != nil {
-			packetPool.Put(&b)
+			bind.packetPool.Put(&b)
 			select {
 			case <-ctx.Done():
 				return
