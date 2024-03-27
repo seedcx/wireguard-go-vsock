@@ -60,7 +60,7 @@ func TestParseVsockAddress(t *testing.T) {
 	}
 }
 
-func TestStdNetBindReceiveFuncAfterClose(t *testing.T) {
+func TestVSOCKBindReceiveFuncAfterClose(t *testing.T) {
 	logger := device.NewLogger(device.LogLevelVerbose, "")
 	bind := NewBind(logger, WithNetwork("tcp")).(*VSOCKBind)
 	port := uint16(testListenPortStart + (testListenPortEnd-testListenPortStart)*rand.Float64())
@@ -82,6 +82,10 @@ func TestStdNetBindReceiveFuncAfterClose(t *testing.T) {
 }
 
 func TestOpenAndSend(t *testing.T) {
+	if raceEnabled {
+		t.SkipNow()
+	}
+
 	bind1 := NewBind(device.NewLogger(device.LogLevelVerbose, "(b1)"), WithNetwork("tcp"))
 	defer bind1.Close()
 
