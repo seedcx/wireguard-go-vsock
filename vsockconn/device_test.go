@@ -263,7 +263,7 @@ func TestConcurrencySafety(t *testing.T) {
 	pair := genTestPair(t, "tcp")
 	done := make(chan struct{})
 
-	const warmupIters = 10
+	const warmupIters = 1000
 	var warmup sync.WaitGroup
 	warmup.Add(warmupIters)
 	go func() {
