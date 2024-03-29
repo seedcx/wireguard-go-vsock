@@ -20,7 +20,7 @@ import (
 const (
 	ExitSetupSuccess = 0
 	ExitSetupFailed  = 1
-	Version          = "0.1.3"
+	Version          = "0.2.4"
 )
 
 const (

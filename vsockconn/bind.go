@@ -9,6 +9,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"net"
@@ -47,6 +48,7 @@ var (
 
 	ErrInvalid       = errors.New("invalid address")
 	ErrPacketTooLong = errors.New("packet is too long (>64kb)")
+	ErrBadCRC        = errors.New("bad packet checksum")
 )
 
 type VSOCKEndpoint struct {
@@ -451,7 +453,15 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 
 func writePacket(w io.Writer, b []byte) error {
 	// Write the packet's size.
-	err := binary.Write(w, binary.LittleEndian, uint16(len(b)))
+	size := uint16(len(b))
+	err := binary.Write(w, binary.LittleEndian, &size)
+	if err != nil {
+		return err
+	}
+
+	// Write the packet's CRC
+	crc := crc32.ChecksumIEEE(b)
+	err = binary.Write(w, binary.LittleEndian, &crc)
 	if err != nil {
 		return err
 	}
@@ -587,16 +597,30 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 
 func readPacket(r io.Reader, b []byte) (int, error) {
 	// Read the incoming packet's size as a binary value.
-	_, err := io.ReadFull(r, b[:2])
+	var size uint16
+	err := binary.Read(r, binary.LittleEndian, &size)
 	if err != nil {
 		return 0, err
 	}
 
-	// Decode the incoming packet's size from binary.
-	size := int(binary.LittleEndian.Uint16(b[:2]))
+	// Read the incoming packet's CRC.
+	var crc uint32
+	err = binary.Read(r, binary.LittleEndian, &crc)
+	if err != nil {
+		return 0, err
+	}
 
 	// Read the packet, overriding the packet length.
-	return io.ReadFull(r, b[:size])
+	b = b[:size]
+	n, err := io.ReadFull(r, b)
+	if err != nil {
+		return 0, err
+	}
+	if crc != crc32.ChecksumIEEE(b) {
+		return 0, ErrBadCRC
+	}
+
+	return n, nil
 }
 
 func (bind *VSOCKBind) dial(dst net.Addr) {
