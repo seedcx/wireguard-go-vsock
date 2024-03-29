@@ -1,0 +1,8 @@
+FROM debian:bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ca-certificates=2023* \
+      iputils-ping=3:20* \
+      procps=2:4.* \
+      iperf3=3.* \
+ && rm -rf /var/lib/apt/lists/*

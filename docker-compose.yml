@@ -1,0 +1,92 @@
+version: "3.9"
+
+services:
+  iperf-server:
+    build:
+      dockerfile: Dockerfile.iperf3
+      context: .
+      tags:
+        - iperf-server:latest
+    command: iperf3 -s
+    ports:
+      - "5201:5201/tcp"
+    networks:
+      dmz:
+        ipv4_address: 10.6.0.6
+
+  wg-server:
+    depends_on:
+      - iperf-server
+    build:
+      dockerfile: Dockerfile
+      context: .
+      tags:
+        - wireguard-go-vpn:latest
+    environment:
+      LOG_LEVEL: debug
+    privileged: true
+    volumes:
+      - ./testdata:/etc/wireguard
+    command: bash -c 'set -xo pipefail;
+              /etc/wireguard/init.sh wg-server;
+              wg syncconf wg-server <(wg-quick strip wg-server);
+              ip -4 address add 172.31.0.1 dev wg-server;
+              ip link set mtu 1420 up dev wg-server;
+              ip -4 route add 172.31.0.2/32 dev wg-server;
+              iptables -t nat -A POSTROUTING -o eth0 -j MASQUERADE;
+              ip link set wg-server up;
+              exec sleep infinity'
+    ports:
+      - "51820:51820/tcp"
+    expose: ["51820"]
+    networks:
+      vpn:
+        ipv4_address: 10.5.0.5
+      dmz:
+        ipv4_address: 10.6.0.5
+
+  wg-client:
+    depends_on:
+      - wg-server
+    build:
+      dockerfile: Dockerfile
+      context: .
+      tags:
+        - wireguard-go-vpn:latest
+    environment:
+      LOG_LEVEL: debug
+    privileged: true
+    volumes:
+      - ./testdata:/etc/wireguard
+    command: bash -c 'set -xo pipefail;
+              /etc/wireguard/init.sh wg-client;
+              wg syncconf wg-client <(wg-quick strip wg-client);
+              ip -4 address add 172.31.0.2 dev wg-client;
+              ip link set mtu 1420 up dev wg-client;
+              wg set wg-client fwmark 51820;
+              ip -4 route add 0.0.0.0/0 dev wg-client table 51820;
+              ip -4 rule add not fwmark 51820 table 51820;
+              ip -4 rule add table main suppress_prefixlength 0;
+              sysctl -q net.ipv4.conf.all.src_valid_mark=1;
+              ip link set wg-client up;
+              ip route replace default via 172.31.0.1 dev wg-client;
+              ping -c 3 10.6.0.6;
+              iperf3 -P 10 -d -c 10.6.0.6;
+              iperf3 -P 10 -d -u -c 10.6.0.6;
+              exec sleep infinity'
+    networks:
+      vpn:
+        ipv4_address: 10.5.0.6
+
+networks:
+  vpn:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.5.0.0/16
+  dmz:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.6.0.0/16
+          gateway: 10.6.0.1
