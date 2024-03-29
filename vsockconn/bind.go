@@ -443,7 +443,7 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 		return false, nil
 	}
 
-	err := writePacket(conn, b)
+	err := bind.writePacket(conn, b)
 	if err != nil {
 		return ok, err
 	}
@@ -451,28 +451,26 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 	return ok, nil
 }
 
-func writePacket(w io.Writer, b []byte) error {
+func (bind *VSOCKBind) writePacket(w io.Writer, packet []byte) error {
+	var b [maxPacketSize]byte
+
 	// Write the packet's size.
-	size := uint16(len(b))
-	err := binary.Write(w, binary.LittleEndian, &size)
-	if err != nil {
-		return err
-	}
+	size := uint16(len(packet))
+	binary.LittleEndian.PutUint16(b[:2], size)
 
 	// Write the packet's CRC
-	crc := crc32.ChecksumIEEE(b)
-	err = binary.Write(w, binary.LittleEndian, &crc)
-	if err != nil {
-		return err
-	}
+	crc := crc32.ChecksumIEEE(packet)
+	binary.LittleEndian.PutUint32(b[2:6], crc)
 
 	// Write as many bytes as required to send over the whole packet.
-	for len(b) > 0 {
-		n, err := w.Write(b)
+	copy(b[6:], packet)
+
+	for i := 0; i < 6+len(packet); {
+		n, err := w.Write(b[i : 6+len(packet)])
 		if err != nil {
 			return err
 		}
-		b = b[n:]
+		i += n
 	}
 
 	return nil
@@ -537,7 +535,7 @@ func (bind *VSOCKBind) handleConn(conn net.Conn, reconnect chan<- any) {
 		for l.Len() > 0 {
 			b := l.Front().Value.([]byte)
 
-			err := writePacket(conn, b)
+			err := bind.writePacket(conn, b)
 			if err != nil {
 				bind.log.Errorf("Error sending enqueued packets: %v", err)
 				reconnect <- true
@@ -581,7 +579,7 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 			case <-ctx.Done():
 				return
 			default:
-				bind.log.Verbosef("Routine: reader worker - error %v, reconnecting")
+				bind.log.Verbosef("Routine: reader worker - error %v, reconnecting", err)
 				reconnect <- true
 				return
 			}
