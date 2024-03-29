@@ -3,11 +3,13 @@
 package vsockconn
 
 import (
+	"bufio"
 	"container/list"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"hash/crc32"
 	"io"
 	"math"
 	"net"
@@ -46,6 +48,7 @@ var (
 
 	ErrInvalid       = errors.New("invalid address")
 	ErrPacketTooLong = errors.New("packet is too long (>64kb)")
+	ErrBadCRC        = errors.New("bad packet checksum")
 )
 
 type VSOCKEndpoint struct {
@@ -239,7 +242,7 @@ type VSOCKBind struct {
 	network string
 
 	b       backoff.Backoff
-	dialers map[string]interface{}
+	dialers map[string]any
 	pending map[string]*list.List
 
 	received chan streamDatagram
@@ -263,7 +266,7 @@ func NewBind(logger *device.Logger, opts ...Option) conn.Bind {
 		ctx:      ctx,
 		cancel:   cancel,
 		conns:    make(map[string]net.Conn),
-		dialers:  make(map[string]interface{}),
+		dialers:  make(map[string]any),
 		pending:  make(map[string]*list.List),
 		received: make(chan streamDatagram),
 		packetPool: sync.Pool{
@@ -395,37 +398,40 @@ func (bind *VSOCKBind) send(buff []byte, end conn.Endpoint) error {
 	}
 
 	found, err := bind.lockedSend(buff, se)
-	if !found {
-		bind.mu.Lock()
-		defer bind.mu.Unlock()
-
-		key := se.dst.String()
-		if _, ok := bind.dialers[key]; !ok {
-			bind.dialers[key] = true
-			bind.wg.Add(1)
-			go bind.dial(se.dst)
-		}
-
-		l, ok := bind.pending[key]
-		if !ok {
-			l = list.New()
-			bind.pending[key] = l
-		}
-		ptr := bind.packetPool.Get().(*[]byte)
-		b := *ptr
-		b = b[:maxPacketSize]
-		copy(b, buff)
-		l.PushBack(b[:len(buff)])
-		for l.Len() > maxEnqueuePackets {
-			b = l.Front().Value.([]byte)
-			bind.packetPool.Put(&b)
-			l.Remove(l.Front())
-		}
-
+	if err != nil {
+		return err
+	}
+	if found {
 		return nil
 	}
 
-	return err
+	bind.mu.Lock()
+	defer bind.mu.Unlock()
+
+	key := se.dst.String()
+	if _, ok := bind.dialers[key]; !ok {
+		bind.dialers[key] = true
+		bind.wg.Add(1)
+		go bind.dial(se.dst)
+	}
+
+	l, ok := bind.pending[key]
+	if !ok {
+		l = list.New()
+		bind.pending[key] = l
+	}
+	ptr := bind.packetPool.Get().(*[]byte)
+	b := *ptr
+	b = b[:maxPacketSize]
+	copy(b, buff)
+	l.PushBack(b[:len(buff)])
+	for l.Len() > maxEnqueuePackets {
+		b = l.Front().Value.([]byte)
+		bind.packetPool.Put(&b)
+		l.Remove(l.Front())
+	}
+
+	return nil
 }
 
 func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
@@ -437,7 +443,7 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 		return false, nil
 	}
 
-	err := writePacketToConn(conn, b)
+	err := bind.writePacket(conn, b)
 	if err != nil {
 		return ok, err
 	}
@@ -445,20 +451,26 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 	return ok, nil
 }
 
-func writePacketToConn(conn net.Conn, b []byte) error {
+func (bind *VSOCKBind) writePacket(w io.Writer, packet []byte) error {
+	var b [maxPacketSize]byte
+
 	// Write the packet's size.
-	err := binary.Write(conn, binary.LittleEndian, uint16(len(b)))
-	if err != nil {
-		return err
-	}
+	size := uint16(len(packet))
+	binary.LittleEndian.PutUint16(b[:2], size)
+
+	// Write the packet's CRC
+	crc := crc32.ChecksumIEEE(packet)
+	binary.LittleEndian.PutUint32(b[2:6], crc)
 
 	// Write as many bytes as required to send over the whole packet.
-	for len(b) > 0 {
-		n, err := conn.Write(b)
+	copy(b[6:], packet)
+
+	for i := 0; i < 6+len(packet); {
+		n, err := w.Write(b[i : 6+len(packet)])
 		if err != nil {
 			return err
 		}
-		b = b[n:]
+		i += n
 	}
 
 	return nil
@@ -505,66 +517,69 @@ func (bind *VSOCKBind) serve() {
 		}
 
 		bind.log.Verbosef("Routine: acceptor worker - new connection from: %v", conn.RemoteAddr())
-		bind.handleConn(conn, nil, make(chan interface{}, 1))
+		bind.handleConn(conn, make(chan any, 1))
 	}
 }
 
-func (bind *VSOCKBind) handleConn(conn net.Conn, dst net.Addr, reconnect chan<- interface{}) {
+func (bind *VSOCKBind) handleConn(conn net.Conn, reconnect chan<- any) {
 	bind.mu.Lock()
 	defer bind.mu.Unlock()
-	bind.conns[conn.RemoteAddr().String()] = conn
+
+	key := conn.RemoteAddr().String()
+	bind.conns[key] = conn
 
 	// If there are pending frames, dispatch them all now
 
-	if dst != nil {
-		key := dst.String()
-		l, ok := bind.pending[key]
-		if ok {
-			for l.Len() > 0 {
-				b := l.Front().Value.([]byte)
+	l, ok := bind.pending[key]
+	if ok {
+		for l.Len() > 0 {
+			b := l.Front().Value.([]byte)
 
-				err := writePacketToConn(conn, b)
-				if err != nil {
-					bind.log.Errorf("Error sending enqueued packets: %v", err)
-					reconnect <- true
-					return
-				}
-
-				bind.packetPool.Put(&b)
-				l.Remove(l.Front())
+			err := bind.writePacket(conn, b)
+			if err != nil {
+				bind.log.Errorf("Error sending enqueued packets: %v", err)
+				reconnect <- true
+				return
 			}
-			delete(bind.pending, key)
+
+			bind.packetPool.Put(&b)
+			l.Remove(l.Front())
 		}
+		delete(bind.pending, key)
 	}
 
 	bind.wg.Add(1)
 	go bind.read(bind.ctx, conn, reconnect)
 }
 
-func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<- interface{}) {
+func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<- any) {
 	bind.log.Verbosef("Routine: reader worker - started")
 	defer bind.log.Verbosef("Routine: reader worker - stopped")
+
+	remoteAddr := conn.RemoteAddr()
 
 	defer func() {
 		bind.wg.Done()
 
 		bind.mu.Lock()
-		defer bind.mu.Unlock()
-		delete(bind.conns, conn.RemoteAddr().String())
+		delete(bind.conns, remoteAddr.String())
 		conn.Close()
+		bind.mu.Unlock()
 	}()
 
+	r := bufio.NewReaderSize(conn, maxPacketSize)
 	for {
 		ptr := bind.packetPool.Get().(*[]byte)
 		b := *ptr
 		b = b[:maxPacketSize]
-		n, err := readPacketFromConn(conn, b)
+		n, err := readPacket(r, b)
 		if err != nil {
 			bind.packetPool.Put(&b)
 			select {
 			case <-ctx.Done():
 				return
 			default:
+				bind.log.Verbosef("Routine: reader worker - error %v, reconnecting", err)
 				reconnect <- true
 				return
 			}
@@ -573,32 +588,53 @@ func (bind *VSOCKBind) read(ctx context.Context, conn net.Conn, reconnect chan<-
 		select {
 		case <-ctx.Done():
 			return
-		case bind.received <- streamDatagram{b[:n], conn.RemoteAddr()}:
+		case bind.received <- streamDatagram{b[:n], remoteAddr}:
 		}
 	}
 }
 
-func readPacketFromConn(conn net.Conn, b []byte) (int, error) {
+func readPacket(r io.Reader, b []byte) (int, error) {
 	// Read the incoming packet's size as a binary value.
-	_, err := io.ReadFull(conn, b[:2])
+	var size uint16
+	err := binary.Read(r, binary.LittleEndian, &size)
 	if err != nil {
 		return 0, err
 	}
 
-	// Decode the incoming packet's size from binary.
-	size := int(binary.LittleEndian.Uint16(b[:2]))
+	// Read the incoming packet's CRC.
+	var crc uint32
+	err = binary.Read(r, binary.LittleEndian, &crc)
+	if err != nil {
+		return 0, err
+	}
 
 	// Read the packet, overriding the packet length.
-	return io.ReadFull(conn, b[:size])
+	b = b[:size]
+	n, err := io.ReadFull(r, b)
+	if err != nil {
+		return 0, err
+	}
+	if crc != crc32.ChecksumIEEE(b) {
+		return 0, ErrBadCRC
+	}
+
+	return n, nil
 }
 
 func (bind *VSOCKBind) dial(dst net.Addr) {
 	bind.log.Verbosef("Routine: dialer worker - started")
 	defer bind.log.Verbosef("Routine: dialer worker - stopped")
 
-	defer bind.wg.Done()
+	defer func() {
+		bind.wg.Done()
 
-	reconnect := make(chan interface{}, 1)
+		bind.mu.Lock()
+		key := dst.String()
+		delete(bind.dialers, key)
+		bind.mu.Unlock()
+	}()
+
+	reconnect := make(chan any, 1)
 
 	b := bind.b
 	t := time.NewTimer(0)
@@ -632,7 +668,7 @@ func (bind *VSOCKBind) dial(dst net.Addr) {
 		bind.log.Verbosef("Routine: dialer worker - connected")
 
 		b.Reset()
-		bind.handleConn(conn, dst, reconnect)
+		bind.handleConn(conn, reconnect)
 		select {
 		case <-bind.ctx.Done():
 			return

@@ -106,7 +106,7 @@ func TestOpenAndSend(t *testing.T) {
 	t.Run("burst initial packets", func(t *testing.T) {
 		var expectedPackets [][]byte
 		for i := 0; i < 2*maxEnqueuePackets; i++ {
-			expectedPackets = append(expectedPackets, produceCountingPackets(int64(i)))
+			expectedPackets = append(expectedPackets, produceCountingPackets(int64(i), 10))
 		}
 
 		buf := make([][]byte, bind2.BatchSize())
@@ -162,7 +162,7 @@ func TestOpenAndSend(t *testing.T) {
 	t.Run("next packets after connecting", func(t *testing.T) {
 		var expectedPackets [][]byte
 		for i := 0; i < 100; i++ {
-			expectedPackets = append(expectedPackets, produceCountingPackets(int64(i)))
+			expectedPackets = append(expectedPackets, produceCountingPackets(int64(i), 10))
 		}
 
 		buf := make([][]byte, bind2.BatchSize())
@@ -214,7 +214,7 @@ func TestOpenAndSend(t *testing.T) {
 	})
 }
 
-func produceCountingPackets(i int64) []byte {
+func produceCountingPackets(i int64, size int) []byte {
 	bi := new(big.Int).SetInt64(i)
-	return bi.FillBytes(make([]byte, 10))
+	return bi.FillBytes(make([]byte, size))
 }

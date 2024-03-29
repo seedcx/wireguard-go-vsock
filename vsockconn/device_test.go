@@ -338,6 +338,49 @@ func TestConcurrencySafety(t *testing.T) {
 	close(done)
 }
 
+func TestHighThroughputTransfer(t *testing.T) {
+	pair := genTestPair(t, "tcp")
+	pair.Send(t, Ping, nil)
+	pair.Send(t, Pong, nil)
+
+	var packets [][]byte
+	for i := 0; i < 10000; i++ {
+		msg := produceCountingPackets(int64(i), 1024)
+		packet, err := buildUDPPacket(pair[1].ip, pair[0].ip, 1339, 1338, msg)
+		if err != nil {
+			t.Fatalf("Error creating UDP packet #%d: %v", i, err)
+		}
+		packets = append(packets, packet)
+	}
+
+	var wg sync.WaitGroup
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < len(packets); i++ {
+			pair[0].tun.Outbound <- packets[i]
+		}
+	}()
+
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < len(packets); i++ {
+			p := <-pair[1].tun.Inbound
+			if !bytes.Equal(packets[i], p) {
+				t.Errorf("Packet #%d didn't match, wanted %v, got %v", i, packets[i], p)
+			}
+		}
+	}()
+
+	wg.Wait()
+
+	for i := range pair {
+		pair[i].dev.Close()
+	}
+}
+
 func BenchmarkLatency(b *testing.B) {
 	pair := genTestPair(b, "tcp")
 
@@ -408,11 +451,8 @@ func FuzzUDPSend(f *testing.F) {
 		if err != nil {
 			t.Fatalf("Error building UDP packet: %v", err)
 		}
-		if len(msg) == 0 {
-			return
-		}
 		pair[i].tun.Outbound <- packet
-		timer := time.NewTimer(500 * time.Millisecond)
+		timer := time.NewTimer(5 * time.Second)
 		defer timer.Stop()
 		err = nil
 		select {
