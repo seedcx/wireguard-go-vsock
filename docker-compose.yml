@@ -70,9 +70,9 @@ services:
               sysctl -q net.ipv4.conf.all.src_valid_mark=1;
               ip link set wg-client up;
               ip route replace default via 172.31.0.1 dev wg-client;
-              ping -c 3 10.6.0.6;
-              iperf3 -P 10 -d -c 10.6.0.6;
-              iperf3 -P 10 -d -u -c 10.6.0.6;
+              ping -c 3 -s 1472 -D 10.6.0.6;
+              iperf3 -c 10.6.0.6 -t 300;
+              iperf3 -c 10.6.0.6 -u -t 300 -b 100M;
               exec sleep infinity'
     networks:
       vpn:
