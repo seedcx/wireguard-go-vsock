@@ -3,3 +3,6 @@
 /examples/http-server/http-server
 /coverage.out
 /integration_coverage.out
+
+# For temporary Latex files
+/docs/*/build
