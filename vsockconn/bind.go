@@ -452,7 +452,16 @@ func (bind *VSOCKBind) lockedSend(b []byte, se *VSOCKEndpoint) (bool, error) {
 }
 
 func (bind *VSOCKBind) writePacket(w io.Writer, packet []byte) error {
-	var b [maxPacketSize]byte
+	packetLen := len(packet)
+	if packetLen > maxPacketSize-6 {
+		return fmt.Errorf("packet size exceeds maximum allowed size")
+	}
+
+	// Get a buffer from the pool
+	ptr := bind.packetPool.Get().(*[]byte)
+	b := *ptr
+	b = b[:maxPacketSize]
+	defer bind.packetPool.Put(&b) // Ensure the buffer is put back into the pool
 
 	// Write the packet's size.
 	size := uint16(len(packet))
@@ -465,8 +474,8 @@ func (bind *VSOCKBind) writePacket(w io.Writer, packet []byte) error {
 	// Write as many bytes as required to send over the whole packet.
 	copy(b[6:], packet)
 
-	for i := 0; i < 6+len(packet); {
-		n, err := w.Write(b[i : 6+len(packet)])
+	for i := 0; i < 6+packetLen; {
+		n, err := w.Write(b[i : 6+packetLen])
 		if err != nil {
 			return err
 		}
